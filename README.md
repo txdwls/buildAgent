@@ -1,2 +1,5 @@
 # buildAgent
-An experimental repository for building LLM-powered agents with tool use, memory, workflow orchestration, and RAG.
+
+A repository for learning AI agents by building them from scratch with raw SDKs.
+
+The focus is on tool use loops, context management, observability, evaluation, and guardrails.
