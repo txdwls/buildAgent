@@ -64,7 +64,7 @@ AI 엔지니어로 취업하기 위해 **AI 에이전트를 raw SDK로 직접 �
 - immutable 패턴 우선 (기존 객체 mutate 금지)
 - 명시적 에러 핸들링 (silent swallow 금지)
 - 시크릿 하드코딩 금지, 반드시 env로 주입
-- 명명: `camelCase` 변수 및 함수, `PascalCase` 타입 및 클래스, `UPPER_SNAKE_CASE` 상수, `is`, `has`, `should`, `can` 접두 boolean
+- 명명: Python은 PEP 8 준수. `snake_case` 변수 및 함수 및 모듈, `PascalCase` 클래스 및 타입, `UPPER_SNAKE_CASE` 상수, `is`, `has`, `should`, `can` 접두 boolean. ruff의 `N` 룰이 강제한다.
 
 ### 하지 말 것
 
