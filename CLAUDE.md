@@ -303,7 +303,136 @@ Langfuse의 계층:
 
 ## 6. 디렉토리 구조
 
-개념 문서 확정 후 별도 스텝에서 결정.
+전체 Phase(1~12)를 예상해 계층을 앞에서 잡되, **각 Phase 진입 시점에 그 슬롯에만 파일을 채운다. 빈 스텁 폴더는 만들지 않는다.**
+
+```
+buildAgent/
+├── src/buildagent/                # src-layout
+│   ├── __init__.py
+│   ├── __main__.py                # python -m buildagent → CLI
+│   ├── config/
+│   │   ├── settings.py            # pydantic-settings Settings
+│   │   ├── logging.py             # stdlib logging + JSON formatter
+│   │   └── constants.py
+│   ├── domain/                    # 순수 도메인. I/O·SDK 임포트 금지
+│   │   ├── messages.py            # Message, Role, ToolCall, ToolResult (frozen)
+│   │   ├── tool.py                # Tool Protocol
+│   │   ├── agent_state.py
+│   │   └── errors.py
+│   ├── llm/                       # OpenAI SDK가 임포트되는 유일한 층
+│   │   ├── base.py                # LLMClient Protocol
+│   │   ├── openai_client.py
+│   │   ├── retry.py               # tenacity 정책
+│   │   ├── fallback.py
+│   │   └── caching.py             # prompt-cache prefix 정렬
+│   ├── tools/
+│   │   ├── registry.py            # 등록/lookup, OpenAI function schema 익스포트
+│   │   ├── dispatch.py            # tool_call → ToolResult (span 자동)
+│   │   ├── web_search.py          # Phase 1: Tavily
+│   │   ├── filesystem.py          # Phase 3
+│   │   ├── code_exec.py           # Phase 3
+│   │   ├── http_fetch.py          # Phase 3
+│   │   └── browser/               # Phase 4
+│   │       ├── session.py
+│   │       ├── actions.py
+│   │       └── budget.py
+│   ├── agent/
+│   │   ├── loop.py                # 코어 function-calling loop
+│   │   ├── runner.py              # loop + tools + context + guardrails 조립
+│   │   ├── reflection.py          # Phase 6
+│   │   ├── planner_executor.py    # Phase 8
+│   │   └── supervisor.py          # Phase 9
+│   ├── context/                   # Phase 5
+│   │   ├── window.py
+│   │   ├── summarizer.py
+│   │   ├── selective.py
+│   │   └── assembler.py           # system|tools|memory|summary|recent|input 순
+│   ├── memory/                    # Phase 7+
+│   │   ├── base.py
+│   │   ├── vector/{base,chroma}.py
+│   │   └── retriever.py
+│   ├── rag/                       # Phase 7
+│   │   ├── naive.py
+│   │   ├── agentic.py
+│   │   └── indexer.py
+│   ├── guardrails/                # Phase 10 (Phase 1부터 최소 스캐폴드)
+│   │   ├── base.py
+│   │   ├── input/{pii,jailbreak}.py
+│   │   ├── output/{pii_mask,groundedness}.py
+│   │   └── execution/{timeout,sandbox}.py
+│   ├── observability/             # Langfuse
+│   │   ├── tracer.py
+│   │   ├── generation.py          # LLM 호출 wrap (토큰·비용)
+│   │   ├── cost.py                # 모델별 USD 테이블
+│   │   └── spans.py
+│   ├── prompts.py                 # Langfuse prompt management 래퍼 (get_prompt, 캐시, fallback)
+│   ├── api/
+│   │   ├── app.py                 # FastAPI factory
+│   │   ├── dependencies.py        # DI: FastAPI Depends
+│   │   ├── errors.py
+│   │   └── routes/
+│   │       ├── health.py
+│   │       └── openai_compat/{chat,models,streaming}.py   # Phase 2
+│   └── cli/
+│       ├── main.py                # argparse 기반
+│       ├── chat.py                # 다중 turn REPL
+│       └── eval.py
+├── tests/
+│   ├── conftest.py                # LLM stub, Tool stub 픽스처
+│   ├── unit/                      # 네트워크·파일 없음
+│   ├── integration/               # 실 Langfuse, LLM은 vcr/stub
+│   └── e2e/                       # 실 OpenAI (opt-in env flag)
+├── evals/                         # Phase 11
+│   ├── datasets/*.yaml            # {input, expected_tools, criteria}
+│   ├── judges/                    # LLM-as-judge 프롬프트도 Langfuse에 두되, run.py가 fetch
+│   ├── run.py
+│   └── reports/                   # gitignored
+├── scripts/
+│   ├── bootstrap.sh               # uv sync + docker up + wait-healthy
+│   └── langfuse_smoke.py
+├── ops/
+│   ├── docker/                    # compose.override 예시
+│   └── openwebui/                 # Phase 2 add-on
+├── docs/
+│   ├── adr/                       # 결정 기록 (면접용 서사)
+│   ├── phases/                    # Phase별 회고 (트레이드오프·수치·트레이스 캡처)
+│   ├── concepts/                  # §4 요약본
+│   └── observability/             # 트레이스 스크린샷 + 해설
+├── .github/workflows/
+│   ├── ci.yml                     # ruff + pyright + pytest
+│   └── eval.yml                   # 야간 eval (Phase 11 이후)
+├── .env / .env.example
+├── docker-compose.yml
+├── pyproject.toml
+├── uv.lock
+├── README.md
+├── CLAUDE.md
+├── AGENTS.md
+└── LICENSE
+```
+
+### 6.1 구조 원칙
+
+- **의존성 방향**: `domain` ← `llm`/`tools`/`observability`/`prompts` ← `agent` ← `api`/`cli`. domain은 어떤 SDK도 안 본다. OpenAI SDK는 `llm/` 안에만.
+- **한 Phase가 한 폴더**: Phase 진입 시 그 폴더만 커지고 나머지는 손대지 않음.
+- **`prompts/` 로컬 폴더 없음**: 시스템 프롬프트, tool 설명, judge rubric, reflection critique 등 모든 프롬프트는 **Langfuse prompt management**에 등록·버저닝. 코드는 `src/buildagent/prompts.py`의 얇은 래퍼(`get_prompt(name, label="production")`, 캐시, fallback 문자열)로 fetch.
+- **`docs/adr/` + `docs/phases/`**: 면접 서사가 여기 쌓임. 코드만 남기면 학습 증거가 없음.
+
+### 6.2 확정된 구현 결정 (Phase 1 진입 전)
+
+| 항목 | 선택 | 이유 |
+|---|---|---|
+| 프롬프트 관리 | Langfuse prompt management | 코드와 프롬프트 커밋 분리, 버전 diff·성능 대비 UI 지원, eval 회귀 대상과 정합 |
+| CLI 프레임워크 | stdlib `argparse` | 옵션 손 아플 때만 typer 도입 |
+| 로깅 | stdlib `logging` + JSON formatter | structlog은 정말 필요할 때 |
+| DI | FastAPI `Depends` | 별도 컨테이너 미도입 |
+| 테스트 층 분리 | `@pytest.mark.integration`, `@pytest.mark.e2e` | 기본 `pytest` 실행에서 e2e 제외 |
+
+### 6.3 Git 브랜치 전략
+
+- `main`: 항상 돌아가는 상태
+- `phase/N-<slug>`: Phase 단위 작업 브랜치, Phase 종료 시 PR로 self-review → `main` merge
+- `dev` 브랜치는 Phase 0 세팅 완료 후 `main`에 흡수하고 폐기
 
 ## 7. 실행 방법
 
