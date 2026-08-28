@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     langfuse_public_key: str = Field(min_length=1)
     langfuse_secret_key: str = Field(min_length=1)
 
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5.6-luna"
     openai_request_timeout_s: float = 60.0
 
     max_loop_iterations: int = 10
