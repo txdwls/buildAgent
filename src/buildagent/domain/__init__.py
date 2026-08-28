@@ -7,8 +7,6 @@ from buildagent.domain.errors import (
 from buildagent.domain.messages import (
     Message,
     ToolCall,
-    assistant_from_openai,
-    extract_tool_calls,
     system_message,
     tool_result_message,
     user_message,
@@ -23,8 +21,6 @@ __all__ = [
     "ToolCall",
     "ToolError",
     "ToolNotFound",
-    "assistant_from_openai",
-    "extract_tool_calls",
     "system_message",
     "tool_result_message",
     "user_message",

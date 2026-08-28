@@ -72,6 +72,14 @@ AI 엔지니어로 취업하기 위해 **AI 에이전트를 raw SDK로 직접 �
 - 이 리포 스코프 밖 파일 수정
 - 개념 문서가 확정되기 전 구현 산출물 생성
 
+### 커밋 컨벤션
+
+- 포맷: `<type>(<scope>): <description>` (Conventional Commits 준수).
+- 타입: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
+- 한 커밋 = 한 논리 단위. 여러 관심사를 한 커밋에 섞지 않는다. 리팩터, 신규 기능, 테스트, 설정 변경은 각각 별도 커밋.
+- description은 그 커밋이 실제로 무엇을 바꿨는지 구체적으로 서술. `feat(phase-2): phase 2 작업 전체` 같은 두루뭉술한 요약 금지. `feat(api): expose /v1/chat/completions with SSE streaming` 처럼 결과물 자체를 명시.
+- 여러 커밋으로 나눠서 PR에서 커밋 단위로 리뷰가 가능하게 한다. squash merge 금지 (또는 신중), 기본은 merge commit으로 히스토리 보존.
+
 ---
 
 ## 3. 기술 스택
@@ -430,9 +438,10 @@ buildAgent/
 
 ### 6.3 Git 브랜치 전략
 
-- `main`: 항상 돌아가는 상태
-- `phase/N-<slug>`: Phase 단위 작업 브랜치, Phase 종료 시 PR로 self-review → `main` merge
-- `dev` 브랜치는 Phase 0 세팅 완료 후 `main`에 흡수하고 폐기
+- `main`: 항상 배포 가능한 안정 상태. 직접 커밋 금지. `dev`로부터의 merge만 받는다.
+- `dev`: 통합 브랜치. 모든 feature 브랜치가 여기로 PR merge된다. 릴리스 시점에 `dev` → `main`.
+- `feature/<slug>`: 단위 작업 브랜치. `dev`에서 분기, 완료 후 PR로 `dev`에 merge, merge 즉시 로컬과 원격에서 삭제한다.
+- Phase 단위 브랜치 이름 (`phase/N-...`)은 사용하지 않는다. 브랜치 이름은 그 작업이 무엇을 만드는지 짧게 표현한다 (예: `feature/openai-compat-api`, `feature/filesystem-tool`).
 
 ## 7. 실행 방법
 

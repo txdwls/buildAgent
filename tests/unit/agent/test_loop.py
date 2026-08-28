@@ -1,17 +1,21 @@
-"""Tests the core function-calling loop against a stubbed LLM client.
+"""Tests the streaming function-calling loop against a stubbed LLM client.
 
-We fake AsyncOpenAI just enough to script a sequence of responses:
-first a tool_call, then a plain content answer. The registered tool
-records that it was invoked. This verifies that:
-    - tool_calls are dispatched
-    - tool results are appended as role=tool messages
-    - the loop terminates on the first response without tool_calls
+We fake AsyncOpenAI's streaming shape just enough to script a sequence of
+turns. Each turn is a list of chunks (SSE deltas); the fake `create()` returns
+an async iterator over those chunks. That mirrors the real SDK contract and
+verifies:
+    - tool_call deltas across chunks are reassembled and dispatched
+    - tool results are appended as role="tool" messages on the next turn
+    - the loop terminates when a turn has content only (no tool_calls)
+    - text deltas from the final turn are surfaced via `run_loop`'s buffered
+      return value
     - LoopBudgetExceeded fires when the model keeps calling tools
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,60 +27,58 @@ from buildagent.tools.registry import ToolRegistry
 
 
 @dataclass
-class _FakeFunction:
-    name: str
-    arguments: str
+class _FnDelta:
+    name: str | None = None
+    arguments: str | None = None
 
 
 @dataclass
-class _FakeToolCall:
-    id: str
-    function: _FakeFunction
+class _ToolCallDelta:
+    index: int
+    id: str | None = None
+    function: _FnDelta | None = None
     type: str = "function"
 
 
 @dataclass
-class _FakeMessage:
-    role: str = "assistant"
+class _Delta:
     content: str | None = None
-    tool_calls: list[_FakeToolCall] | None = None
-
-    def model_dump(self, exclude_none: bool = True) -> dict[str, Any]:
-        data: dict[str, Any] = {"role": self.role}
-        if self.content is not None:
-            data["content"] = self.content
-        if self.tool_calls is not None:
-            data["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in self.tool_calls
-            ]
-        return data
+    tool_calls: list[_ToolCallDelta] | None = None
 
 
 @dataclass
-class _FakeChoice:
-    message: _FakeMessage
+class _ChoiceChunk:
+    delta: _Delta
 
 
 @dataclass
-class _FakeResponse:
-    choices: list[_FakeChoice]
+class _Chunk:
+    choices: list[_ChoiceChunk]
+
+
+class _AsyncChunkIter:
+    def __init__(self, chunks: list[_Chunk]) -> None:
+        self._chunks = list(chunks)
+
+    def __aiter__(self) -> AsyncIterator[_Chunk]:
+        return self
+
+    async def __anext__(self) -> _Chunk:
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
 
 
 class _FakeCompletions:
-    def __init__(self, scripted: list[_FakeMessage]) -> None:
-        self._scripted = list(scripted)
+    def __init__(self, scripted_turns: list[list[_Chunk]]) -> None:
+        self._turns = list(scripted_turns)
         self.calls: list[dict[str, Any]] = []
 
-    async def create(self, **kwargs: Any) -> _FakeResponse:
+    async def create(self, **kwargs: Any) -> _AsyncChunkIter:
         self.calls.append(kwargs)
-        if not self._scripted:
+        if not self._turns:
             raise AssertionError("LLM called more times than scripted")
-        return _FakeResponse(choices=[_FakeChoice(message=self._scripted.pop(0))])
+        return _AsyncChunkIter(self._turns.pop(0))
 
 
 class _FakeChat:
@@ -85,13 +87,35 @@ class _FakeChat:
 
 
 class _FakeClient:
-    def __init__(self, scripted: list[_FakeMessage]) -> None:
-        self._completions = _FakeCompletions(scripted)
+    def __init__(self, scripted_turns: list[list[_Chunk]]) -> None:
+        self._completions = _FakeCompletions(scripted_turns)
         self.chat = _FakeChat(self._completions)
 
     @property
     def calls(self) -> list[dict[str, Any]]:
         return self._completions.calls
+
+
+def _chunk_content(text: str) -> _Chunk:
+    return _Chunk(choices=[_ChoiceChunk(delta=_Delta(content=text))])
+
+
+def _chunk_tool_call(
+    index: int,
+    call_id: str | None = None,
+    name: str | None = None,
+    arguments: str | None = None,
+) -> _Chunk:
+    fn = _FnDelta(name=name, arguments=arguments)
+    return _Chunk(
+        choices=[
+            _ChoiceChunk(
+                delta=_Delta(
+                    tool_calls=[_ToolCallDelta(index=index, id=call_id, function=fn)]
+                )
+            )
+        ]
+    )
 
 
 def _echo_tool(record: list[dict[str, Any]]) -> Tool:
@@ -112,17 +136,20 @@ def _echo_tool(record: list[dict[str, Any]]) -> Tool:
 
 
 @pytest.mark.asyncio
-async def test_loop_dispatches_tool_then_terminates() -> None:
-    scripted = [
-        _FakeMessage(
-            content=None,
-            tool_calls=[
-                _FakeToolCall(id="c1", function=_FakeFunction("echo", json.dumps({"text": "hi"})))
-            ],
-        ),
-        _FakeMessage(content="done"),
+async def test_loop_reassembles_tool_call_deltas_then_streams_answer() -> None:
+    # Turn 1: split the tool_call across three deltas (id, then name, then
+    # arguments in two pieces) — this is what the OpenAI stream really looks like.
+    args_json = json.dumps({"text": "hi"})
+    turn_tool = [
+        _chunk_tool_call(index=0, call_id="c1"),
+        _chunk_tool_call(index=0, name="echo"),
+        _chunk_tool_call(index=0, arguments=args_json[: len(args_json) // 2]),
+        _chunk_tool_call(index=0, arguments=args_json[len(args_json) // 2 :]),
     ]
-    client = _FakeClient(scripted)
+    # Turn 2: final answer streamed as two text chunks.
+    turn_answer = [_chunk_content("do"), _chunk_content("ne")]
+
+    client = _FakeClient([turn_tool, turn_answer])
     called: list[dict[str, Any]] = []
     tools = ToolRegistry()
     tools.register(_echo_tool(called))
@@ -139,17 +166,24 @@ async def test_loop_dispatches_tool_then_terminates() -> None:
     assert called == [{"text": "hi"}]
     assert len(client.calls) == 2
     second_messages = client.calls[1]["messages"]
-    assert any(m.get("role") == "tool" and m.get("content") == "echo:hi" for m in second_messages)
+    assert any(
+        m.get("role") == "tool" and m.get("content") == "echo:hi"
+        for m in second_messages
+    )
+    # Every create() call must set stream=True.
+    assert all(call.get("stream") is True for call in client.calls)
 
 
 @pytest.mark.asyncio
 async def test_loop_raises_when_budget_exhausted() -> None:
-    tool_call = _FakeToolCall(
-        id="loop",
-        function=_FakeFunction("echo", json.dumps({"text": "x"})),
-    )
-    scripted = [_FakeMessage(content=None, tool_calls=[tool_call]) for _ in range(3)]
-    client = _FakeClient(scripted)
+    def tool_turn() -> list[_Chunk]:
+        return [
+            _chunk_tool_call(index=0, call_id="loop"),
+            _chunk_tool_call(index=0, name="echo"),
+            _chunk_tool_call(index=0, arguments=json.dumps({"text": "x"})),
+        ]
+
+    client = _FakeClient([tool_turn() for _ in range(3)])
     tools = ToolRegistry()
     tools.register(_echo_tool([]))
 
