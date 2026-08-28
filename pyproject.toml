@@ -1,0 +1,54 @@
+[project]
+name = "buildagent"
+version = "0.1.0"
+description = "Learning AI agents by building them with raw SDKs"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.55.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "langfuse>=2.53.0",
+    "httpx>=0.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7.0",
+    "pyright>=1.1.385",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/buildagent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+include = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+markers = [
+    "integration: hits real Langfuse or other local services",
+    "e2e: hits real OpenAI/Tavily; skipped by default",
+]
+addopts = "-m 'not e2e'"
