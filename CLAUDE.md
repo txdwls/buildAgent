@@ -9,12 +9,12 @@
 AI 엔지니어로 취업하기 위해 **AI 에이전트를 raw SDK로 직접 만들고 운영하며 학습**하는 리포지토리.
 
 - 프레임워크 뒤에 숨은 원리를 이해하는 것이 목적이라 LangGraph, CrewAI 등은 의도적으로 배제한다.
-- Anthropic SDK의 `tool_use` 위에 루프, 컨텍스트, 관측, 평가, 가드레일을 하나씩 손으로 쌓아 올린다.
+- OpenAI SDK의 function calling(`tool_calls`) 위에 루프, 컨텍스트, 관측, 평가, 가드레일을 하나씩 손으로 쌓아 올린다.
 - 프로덕션 관점(관측, 가드레일, 평가, 비용)까지 얹어 실무 서사를 확보한다.
 
 ### 학습 목표 (면접에서 답할 수 있어야 할 것)
 
-- `tool_use` 루프의 실제 동작 원리와 `stop_reason` 처리
+- function calling 루프의 실제 동작 원리와 `finish_reason` / `tool_calls` 처리
 - 여러 에이전트 패턴(**독립, reflection, planner-executor, multi-agent, router, HITL**)의 트레이드오프
 - 컨텍스트 관리(대화 이력, 압축, 메모리) 전략과 한계
 - RAG의 한계와 agentic RAG가 필요한 이유
@@ -25,8 +25,8 @@ AI 엔지니어로 취업하기 위해 **AI 에이전트를 raw SDK로 직접 �
 ### 범위와 비범위
 
 **포함**
-- Anthropic Claude API `tool_use` 기반 에이전트 백엔드
-- OpenAI 호환 엔드포인트 노출 후 Open WebUI로 채팅
+- OpenAI API function calling 기반 에이전트 백엔드
+- OpenAI 호환 엔드포인트로 노출 후 Open WebUI로 채팅
 - Langfuse self-host (docker compose)로 관측
 - 가드레일, 평가, 안정성 요소
 
@@ -84,7 +84,7 @@ AI 엔지니어로 취업하기 위해 **AI 에이전트를 raw SDK로 직접 �
 | Type check | `pyright` (strict) | 협업 시 표준 |
 | Test | `pytest` | 표준 |
 | 웹 | FastAPI, SSE | 스트리밍, OpenAI 호환 구현 용이 |
-| LLM | Anthropic Claude (기본), OpenAI (fallback 후보) | tool_use 명세 학습 목적 |
+| LLM | OpenAI (기본), Anthropic Claude (fallback 후보) | function calling 명세 학습 목적 |
 | 에이전트 | raw SDK loop | 프레임워크 배제 |
 | 프론트 | Open WebUI (docker) | 검증된 오픈소스 재사용 |
 | 관측 | Langfuse self-host (docker) | trace, eval 표준, self-host 경험 |
@@ -101,33 +101,35 @@ AI 엔지니어로 취업하기 위해 **AI 에이전트를 raw SDK로 직접 �
 - LLM 단독은 텍스트 생성만 한다. 도구를 호출할 수 있고, 도구 결과를 받아 **다음 결정에 반영하는 루프**가 있어야 에이전트다.
 - 워크플로(사람이 짠 결정 트리)와의 차이는, 에이전트가 **다음에 뭘 할지 LLM이 결정**한다는 점이다. 결정권을 LLM에 위임한 만큼 관측과 가드레일이 필수가 된다.
 
-### 4.2 Tool Use 프로토콜 (Anthropic)
+### 4.2 Tool Use 프로토콜 (OpenAI function calling)
 
 한 번의 API 호출이 한 번의 결정.
 
 ```
-messages 전송, LLM 응답, response.stop_reason 확인
+messages 전송, LLM 응답, choices[0].finish_reason 및 message.tool_calls 확인
 
-stop_reason 처리:
-- "end_turn":      최종 답. 루프 종료.
-- "tool_use":      어떤 tool을 어떤 인자로 부를지 지정. 실행 후 결과 반환.
-- "max_tokens":    토큰 소진. 잘라 처리하거나 재시도.
-- "stop_sequence": 지정된 stop 문자열 등장.
+finish_reason 처리:
+- "stop":          최종 답. 루프 종료.
+- "tool_calls":    어떤 function을 어떤 인자로 부를지 지정 (message.tool_calls 배열). 실행 후 결과 반환.
+- "length":        max_tokens 소진. 잘라 처리하거나 재시도.
+- "content_filter": 정책 필터 컷. 사용자에게 알리고 종료.
 ```
 
-Tool 결과는 `role: user`의 `tool_result` block으로 다음 요청에 실려 들어간다. **모델은 tool 결과를 봤다는 사실을 API가 아니라 messages 배열로만 안다.** 이 인식이 컨텍스트 관리와 직결된다.
+Tool 결과는 `role: "tool"` 메시지로 다음 요청에 실려 들어가며, 각 결과는 원 `tool_call`의 `id`를 `tool_call_id`로 참조해야 한다. **모델은 tool 결과를 봤다는 사실을 API가 아니라 messages 배열로만 안다.** 이 인식이 컨텍스트 관리와 직결된다.
 
 ### 4.3 에이전트 루프
 
 ```python
 messages = [system, user]
 while True:
-    resp = llm.create(model, tools, messages)   # retry, fallback, caching 적용
-    messages.append(assistant(resp.content))
-    if resp.stop_reason == "end_turn":
-        return final_text(resp)
-    tool_results = [dispatch(block) for block in resp.content if block.type == "tool_use"]
-    messages.append(user(tool_results))
+    resp = client.chat.completions.create(model=..., tools=..., messages=messages)  # retry, fallback, caching 적용
+    msg = resp.choices[0].message
+    messages.append(msg)
+    if not msg.tool_calls:
+        return msg.content
+    for call in msg.tool_calls:
+        result = dispatch(call.function.name, call.function.arguments)
+        messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 ```
 
 이 20줄이 모든 에이전트의 뼈대다. 이후 챕터는 이 루프의 어떤 위치에 무엇을 끼우느냐의 문제.
@@ -202,8 +204,8 @@ Langfuse의 계층:
 ### 4.10 안정성 및 비용
 
 - **Retry**: 429, 5xx, timeout에 exponential backoff 및 jitter.
-- **Fallback**: primary(claude-opus)가 overloaded면 secondary(claude-sonnet)로 자동 전환.
-- **Prompt caching**: 반복되는 시스템 프롬프트, tool 정의는 Anthropic prompt cache 활용.
+- **Fallback**: primary(gpt-5 등) 실패 시 secondary(gpt-4.1 mini 등)로 자동 전환. 필요 시 Anthropic Claude로도 우회.
+- **Prompt caching**: OpenAI는 1024+ 토큰 프리픽스에 대해 자동 캐싱. 시스템 프롬프트와 tool 정의를 messages 앞쪽에 고정해 hit율 유지.
 - **Rate limit 대응**: token bucket으로 요청 페이싱.
 - **비용 관측**: 모든 generation에 model, input_tokens, output_tokens, usd 기록.
 
@@ -230,14 +232,14 @@ Langfuse의 계층:
 - `.env.example`, pydantic-settings 기반 config 로딩
 
 ### Phase 1. 독립 에이전트 MVP
-- Anthropic SDK `tool_use` loop 구현
+- OpenAI SDK function calling loop 구현 (`tool_calls` 처리, `role: "tool"` 메시지 반환)
 - Tool 1개: `web_search` (Tavily)
 - FastAPI 및 Langfuse trace 연결
 - CLI로 다중 turn 대화 테스트
 
 ### Phase 2. OpenAI 호환 및 Open WebUI 연결
-- `POST /v1/chat/completions` (SSE streaming)
-- Anthropic 응답을 OpenAI chunk schema로 매핑
+- `POST /v1/chat/completions` (SSE streaming) 엔드포인트 노출
+- 내부 에이전트 loop의 최종 assistant 응답을 chunk로 스트리밍, tool 실행 진행 상황은 assistant 메시지에 인라인 표시
 - Open WebUI docker-compose 연결
 - 채팅창에서 tool 실행 진행 상황 노출
 
@@ -312,7 +314,7 @@ Phase 0 완료 상태. 로컬 환경 준비 순서.
 3. `.env.example`을 `.env`로 복사
 4. `docker compose up -d`로 Langfuse 자체 호스트 기동
 5. `http://localhost:3000` 접속, 초기 계정 생성, 프로젝트 생성 후 public key 및 secret key를 `.env`에 반영
-6. `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`를 `.env`에 채움
+6. `OPENAI_API_KEY`, `TAVILY_API_KEY`를 `.env`에 채움
 7. Phase 1 트리거는 사용자가 명시 지시
 
 ---
@@ -320,6 +322,7 @@ Phase 0 완료 상태. 로컬 환경 준비 순서.
 ## 8. 참고 자료
 
 - Anthropic, Building Effective Agents: [https://www.anthropic.com/research/building-effective-agents](https://www.anthropic.com/research/building-effective-agents)
-- Anthropic Docs, Tool use: [https://docs.anthropic.com/en/docs/build-with-claude/tool-use](https://docs.anthropic.com/en/docs/build-with-claude/tool-use)
+- OpenAI Docs, Function calling: [https://platform.openai.com/docs/guides/function-calling](https://platform.openai.com/docs/guides/function-calling)
+- OpenAI Docs, Prompt caching: [https://platform.openai.com/docs/guides/prompt-caching](https://platform.openai.com/docs/guides/prompt-caching)
 - Langfuse, self-hosting: [https://langfuse.com/docs/deployment/self-host](https://langfuse.com/docs/deployment/self-host)
 - Open WebUI, openai-compatible endpoints: [https://docs.openwebui.com/](https://docs.openwebui.com/)
