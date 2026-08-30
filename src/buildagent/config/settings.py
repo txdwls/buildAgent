@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     max_loop_iterations: int = 10
     tavily_max_results: int = 5
 
+    filesystem_root: str = "./data/workspace"
+
     system_prompt_name: str = "main_agent"
     system_prompt_label: str = "production"
 

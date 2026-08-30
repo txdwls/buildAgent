@@ -16,7 +16,11 @@ from buildagent.domain import Message, system_message, user_message
 from buildagent.llm import build_openai_client
 from buildagent.observability import init_langfuse
 from buildagent.prompts import get_prompt_text
-from buildagent.tools import ToolRegistry, build_web_search_tool
+from buildagent.tools import (
+    ToolRegistry,
+    build_filesystem_tools,
+    build_web_search_tool,
+)
 
 
 async def _chat() -> None:
@@ -28,6 +32,8 @@ async def _chat() -> None:
     tools.register(
         build_web_search_tool(settings.tavily_api_key, settings.tavily_max_results)
     )
+    for tool in build_filesystem_tools(settings.filesystem_root):
+        tools.register(tool)
 
     system_text = get_prompt_text(settings.system_prompt_name, settings.system_prompt_label)
     history: list[Message] = [system_message(system_text)]
@@ -76,6 +82,8 @@ async def _single(query: str) -> None:
     tools.register(
         build_web_search_tool(settings.tavily_api_key, settings.tavily_max_results)
     )
+    for tool in build_filesystem_tools(settings.filesystem_root):
+        tools.register(tool)
     system_text = get_prompt_text(settings.system_prompt_name, settings.system_prompt_label)
     messages: list[Message] = [system_message(system_text), user_message(query)]
     answer = await run_loop(
