@@ -14,7 +14,11 @@ from openai import AsyncOpenAI
 from buildagent.config import Settings, get_settings
 from buildagent.llm import build_openai_client
 from buildagent.prompts import get_prompt_text
-from buildagent.tools import ToolRegistry, build_web_search_tool
+from buildagent.tools import (
+    ToolRegistry,
+    build_filesystem_tools,
+    build_web_search_tool,
+)
 
 
 @lru_cache(maxsize=1)
@@ -32,6 +36,8 @@ def _tools() -> ToolRegistry:
             max_results=settings.tavily_max_results,
         )
     )
+    for tool in build_filesystem_tools(settings.filesystem_root):
+        registry.register(tool)
     return registry
 
 
