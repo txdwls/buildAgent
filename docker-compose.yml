@@ -43,6 +43,11 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_AUTH: myredissecret
+      # Disable ioredis socketTimeout: dev-only queues (posthog, dataset-delete,
+      # code-eval, experiment-create) sit idle >30s and trip the default 30s
+      # watchdog, spamming "Socket timeout" errors. ponytail: 0 for dev; prod
+      # would want a higher finite value to catch hung moveToCompleted.
+      REDIS_SOCKET_TIMEOUT_MS: 0
 
   langfuse-worker:
     image: langfuse/langfuse-worker:3.225.5
