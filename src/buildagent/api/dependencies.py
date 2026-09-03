@@ -16,6 +16,7 @@ from buildagent.llm import build_openai_client
 from buildagent.prompts import get_prompt_text
 from buildagent.tools import (
     ToolRegistry,
+    build_browser_tools,
     build_filesystem_tools,
     build_web_search_tool,
 )
@@ -37,6 +38,12 @@ def _tools() -> ToolRegistry:
         )
     )
     for tool in build_filesystem_tools(settings.filesystem_root):
+        registry.register(tool)
+    for tool in build_browser_tools(
+        allowed_url_prefixes=settings.browser_allowed_url_prefixes,
+        headless=settings.browser_headless,
+        nav_timeout_s=settings.browser_nav_timeout_s,
+    ):
         registry.register(tool)
     return registry
 
