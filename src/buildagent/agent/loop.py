@@ -37,6 +37,15 @@ from buildagent.domain import (
 )
 from buildagent.tools import ToolRegistry, dispatch_tool_call
 
+# OpenAI's reasoning-family models default to reasoning_effort != 'none' and
+# reject function tools on /v1/chat/completions unless we opt out. Non-reasoning
+# models reject the parameter entirely, so only send it for known families.
+_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    return model.startswith(_REASONING_MODEL_PREFIXES)
+
 
 @observe(name="agent.stream_loop", as_type="agent")
 async def stream_loop(
@@ -55,6 +64,8 @@ async def stream_loop(
         }
         if not tools.is_empty():
             create_kwargs["tools"] = tools.to_openai_schemas()
+            if _is_reasoning_model(model):
+                create_kwargs["reasoning_effort"] = "none"
 
         stream = await client.chat.completions.create(**create_kwargs)
 

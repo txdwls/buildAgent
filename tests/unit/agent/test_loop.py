@@ -175,6 +175,35 @@ async def test_loop_reassembles_tool_call_deltas_then_streams_answer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reasoning_model_sends_effort_none_with_tools() -> None:
+    # gpt-5.6-luna rejects function tools on /v1/chat/completions unless
+    # reasoning_effort='none' is set. Non-reasoning models must not receive it.
+    turn = [_chunk_content("hi")]
+    tools = ToolRegistry()
+    tools.register(_echo_tool([]))
+
+    reasoning = _FakeClient([list(turn)])
+    await run_loop(
+        client=reasoning,  # type: ignore[arg-type]
+        model="gpt-5.6-luna",
+        messages=[user_message("hello")],
+        tools=tools,
+        max_iterations=1,
+    )
+    assert reasoning.calls[0].get("reasoning_effort") == "none"
+
+    plain = _FakeClient([list(turn)])
+    await run_loop(
+        client=plain,  # type: ignore[arg-type]
+        model="gpt-4o",
+        messages=[user_message("hello")],
+        tools=tools,
+        max_iterations=1,
+    )
+    assert "reasoning_effort" not in plain.calls[0]
+
+
+@pytest.mark.asyncio
 async def test_loop_raises_when_budget_exhausted() -> None:
     def tool_turn() -> list[_Chunk]:
         return [

@@ -29,7 +29,6 @@ from buildagent.api.dependencies import (
     get_system_prompt,
     get_tool_registry,
 )
-from buildagent.api.routes.openai_compat.models import MODEL_ID
 from buildagent.config import Settings
 from buildagent.domain import Message, system_message
 from buildagent.tools import ToolRegistry
@@ -61,6 +60,7 @@ async def create_chat_completion(
     working_messages = _build_messages(payload, system_prompt)
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
+    resolved_model = _resolve_model(payload.model, settings)
 
     if payload.stream:
         return StreamingResponse(
@@ -68,7 +68,7 @@ async def create_chat_completion(
                 completion_id=completion_id,
                 created=created,
                 client=client,
-                model=settings.openai_model,
+                model=resolved_model,
                 messages=working_messages,
                 tools=tools,
                 max_iterations=settings.max_loop_iterations,
@@ -78,7 +78,7 @@ async def create_chat_completion(
 
     content = await _collect_content(
         client=client,
-        model=settings.openai_model,
+        model=resolved_model,
         messages=working_messages,
         tools=tools,
         max_iterations=settings.max_loop_iterations,
@@ -88,7 +88,7 @@ async def create_chat_completion(
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": MODEL_ID,
+            "model": resolved_model,
             "choices": [
                 {
                     "index": 0,
@@ -98,6 +98,14 @@ async def create_chat_completion(
             ],
         }
     )
+
+
+def _resolve_model(requested: str, settings: Settings) -> str:
+    # Whitelist gate: unknown model ids fall back to the default so the loop
+    # never forwards an id OpenAI would reject with 404.
+    if requested in settings.openai_model_whitelist:
+        return requested
+    return settings.openai_model
 
 
 def _build_messages(payload: ChatRequest, system_prompt: str) -> list[Message]:
@@ -116,9 +124,16 @@ def _build_messages(payload: ChatRequest, system_prompt: str) -> list[Message]:
 
 
 def _tool_progress_marker(name: str, arguments_json: str) -> str:
-    # Compact one-liner so it renders cleanly in the chat UI.
+    # Render as a collapsible details block. Open WebUI (and most markdown
+    # viewers) render <details>/<summary> as a click-to-expand disclosure,
+    # keeping the transcript readable while still surfacing the raw args.
     compact = arguments_json.replace("\n", " ")
-    return f"\n[tool: {name} {compact}]\n"
+    return (
+        "\n\n<details>\n"
+        f"<summary>tool: {name}</summary>\n\n"
+        f"```json\n{compact}\n```\n\n"
+        "</details>\n\n"
+    )
 
 
 async def _collect_content(
@@ -157,7 +172,7 @@ async def _sse_stream(
             "id": completion_id,
             "object": "chat.completion.chunk",
             "created": created,
-            "model": MODEL_ID,
+            "model": model,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
         return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -175,9 +190,7 @@ async def _sse_stream(
         if isinstance(event, TextDelta):
             yield envelope({"content": event.text})
         elif isinstance(event, ToolStarted):
-            yield envelope(
-                {"content": _tool_progress_marker(event.name, event.arguments_json)}
-            )
+            yield envelope({"content": _tool_progress_marker(event.name, event.arguments_json)})
         # ToolCompleted / LoopCompleted are internal signals: the final answer
         # already incorporates the tool result; nothing to forward as content.
 

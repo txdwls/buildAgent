@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = Field(min_length=1)
 
     openai_model: str = "gpt-5.6-luna"
+    openai_extra_models: str = ""
     openai_request_timeout_s: float = 60.0
 
     max_loop_iterations: int = 10
@@ -37,6 +38,11 @@ class Settings(BaseSettings):
 
     system_prompt_name: str = "main_agent"
     system_prompt_label: str = "production"
+
+    @property
+    def openai_model_whitelist(self) -> list[str]:
+        extras = [m.strip() for m in self.openai_extra_models.split(",") if m.strip()]
+        return list(dict.fromkeys([self.openai_model, *extras]))
 
 
 @lru_cache(maxsize=1)
