@@ -127,7 +127,7 @@ services:
       - minio_data:/data
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.11.1
+    image: ghcr.io/open-webui/open-webui:v0.11.3
     restart: always
     ports:
       - "3001:8080"
