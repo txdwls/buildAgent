@@ -6,6 +6,14 @@
 
 AI 엔지니어로 취업하기 위해 AI 에이전트를 raw SDK로 직접 만들고 운영하며 학습하는 리포지토리.
 
+최종 목표는 실제 사용 중 만난 문제를 재현, 진단, 해결, 재검증하고 그 근거를 포트폴리오로 정리하는 것이다. Phase 구현 개수만으로 성과를 판단하지 않는다.
+
+### 작업 시작과 종료
+
+- Claude와 GPT 모두 매 세션 [docs/project-goal.md](docs/project-goal.md)와 [docs/workflow.md](docs/workflow.md)를 읽는다. 나머지 문서는 현재 작업에 해당하는 부분만 읽는다.
+- 구현 및 검증 작업에서는 관련 로컬 트러블슈팅 색인을 확인하고, 관찰한 실패와 미검증 위험을 구분해 기록한다. 상세 절차와 AI 교체 시 인계 항목은 `docs/workflow.md`를 따른다.
+- Phase 진행 상태는 현재 코드, Git 커밋과 PR로 확인한다. 이 파일에 진행률이나 개별 장애 이력을 쌓지 않는다.
+
 - 프레임워크(LangGraph, CrewAI 등)는 의도적으로 배제. OpenAI SDK function calling(`tool_calls`) 위에 루프, 컨텍스트, 관측, 평가, 가드레일을 손으로 쌓는다.
 - 프론트엔드는 Open WebUI 등 오픈소스 재사용. 배포/운영 인프라는 로컬 학습용에 한정.
 
