@@ -17,7 +17,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel
@@ -56,6 +56,8 @@ async def create_chat_completion(
     tools: Annotated[ToolRegistry, Depends(get_tool_registry)],
     settings: Annotated[Settings, Depends(get_settings_dep)],
     system_prompt: Annotated[str, Depends(get_system_prompt)],
+    chat_id: Annotated[str | None, Header(alias="X-OpenWebUI-Chat-Id", max_length=200)] = None,
+    session_id: Annotated[str | None, Header(alias="X-Session-Id", max_length=200)] = None,
 ) -> StreamingResponse | JSONResponse:
     working_messages = _build_messages(payload, system_prompt)
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -72,6 +74,8 @@ async def create_chat_completion(
                 messages=working_messages,
                 tools=tools,
                 max_iterations=settings.max_loop_iterations,
+                session_id=chat_id or session_id,
+                source="openwebui" if chat_id else "api",
             ),
             media_type="text/event-stream",
         )
@@ -82,6 +86,9 @@ async def create_chat_completion(
         messages=working_messages,
         tools=tools,
         max_iterations=settings.max_loop_iterations,
+        session_id=chat_id or session_id,
+        source="openwebui" if chat_id else "api",
+        request_id=completion_id,
     )
     return JSONResponse(
         {
@@ -142,6 +149,9 @@ async def _collect_content(
     messages: list[Message],
     tools: ToolRegistry,
     max_iterations: int,
+    session_id: str | None = None,
+    source: str = "api",
+    request_id: str | None = None,
 ) -> str:
     parts: list[str] = []
     async for event in stream_loop(
@@ -150,6 +160,9 @@ async def _collect_content(
         messages=messages,
         tools=tools,
         max_iterations=max_iterations,
+        session_id=session_id,
+        source=source,
+        request_id=request_id,
     ):
         if isinstance(event, TextDelta):
             parts.append(event.text)
@@ -166,6 +179,8 @@ async def _sse_stream(
     messages: list[Message],
     tools: ToolRegistry,
     max_iterations: int,
+    session_id: str | None = None,
+    source: str = "api",
 ) -> AsyncIterator[str]:
     def envelope(delta: dict[str, Any], finish_reason: str | None = None) -> str:
         chunk = {
@@ -186,6 +201,9 @@ async def _sse_stream(
         messages=messages,
         tools=tools,
         max_iterations=max_iterations,
+        session_id=session_id,
+        source=source,
+        request_id=completion_id,
     ):
         if isinstance(event, TextDelta):
             yield envelope({"content": event.text})

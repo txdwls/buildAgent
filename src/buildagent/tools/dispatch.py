@@ -32,13 +32,18 @@ async def dispatch_tool_call(registry: ToolRegistry, call: ToolCall) -> str:
         lf.update_current_span(output={"error": error}, level="ERROR")
         return error
 
-    tool = registry.get(call.name)
     try:
+        tool = registry.get(call.name)
         result = await tool.handler(arguments)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         lf.update_current_span(output={"error": error}, level="ERROR")
         raise ToolError(error) from exc
 
-    lf.update_current_span(output={"result_preview": result[:500]})
+    is_error = result.lower().startswith("error:")
+    lf.update_current_span(
+        output={"result_preview": result[:500]},
+        level="ERROR" if is_error else "DEFAULT",
+        status_message=result[:200] if is_error else None,
+    )
     return result

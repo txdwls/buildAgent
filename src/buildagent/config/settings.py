@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     tavily_api_key: str = Field(min_length=1)
 
     langfuse_host: str = "http://localhost:3000"
+    langfuse_tracing_environment: str = "local"
     langfuse_public_key: str = Field(min_length=1)
     langfuse_secret_key: str = Field(min_length=1)
 
