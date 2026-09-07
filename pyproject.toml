@@ -9,7 +9,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
-    "langfuse>=2.53.0",
+    "langfuse>=4.15.0,<5",
     "httpx>=0.27.0",
     "playwright>=1.48.0",
 ]
@@ -52,4 +52,4 @@ markers = [
     "integration: hits real Langfuse or other local services",
     "e2e: hits real OpenAI/Tavily; skipped by default",
 ]
-addopts = "-m 'not e2e'"
+addopts = "-m 'not integration and not e2e'"

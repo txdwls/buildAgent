@@ -18,9 +18,11 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
+from buildagent.agent import loop as loop_module
 from buildagent.agent import run_loop
 from buildagent.domain import LoopBudgetExceeded, Tool, user_message
 from buildagent.tools.registry import ToolRegistry
@@ -110,9 +112,7 @@ def _chunk_tool_call(
     return _Chunk(
         choices=[
             _ChoiceChunk(
-                delta=_Delta(
-                    tool_calls=[_ToolCallDelta(index=index, id=call_id, function=fn)]
-                )
+                delta=_Delta(tool_calls=[_ToolCallDelta(index=index, id=call_id, function=fn)])
             )
         ]
     )
@@ -166,10 +166,7 @@ async def test_loop_reassembles_tool_call_deltas_then_streams_answer() -> None:
     assert called == [{"text": "hi"}]
     assert len(client.calls) == 2
     second_messages = client.calls[1]["messages"]
-    assert any(
-        m.get("role") == "tool" and m.get("content") == "echo:hi"
-        for m in second_messages
-    )
+    assert any(m.get("role") == "tool" and m.get("content") == "echo:hi" for m in second_messages)
     # Every create() call must set stream=True.
     assert all(call.get("stream") is True for call in client.calls)
 
@@ -224,3 +221,55 @@ async def test_loop_raises_when_budget_exhausted() -> None:
             tools=tools,
             max_iterations=3,
         )
+
+
+@pytest.mark.asyncio
+async def test_trace_records_readable_io_and_tool_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    lf = MagicMock()
+    span = lf.start_as_current_observation.return_value.__enter__.return_value
+    monkeypatch.setattr(loop_module, "get_client", lambda: lf)
+    propagation = MagicMock()
+    monkeypatch.setattr(loop_module, "propagate_attributes", propagation)
+
+    async def fail(_: dict[str, Any]) -> str:
+        return "error: current page not in allowlist"
+
+    tools = ToolRegistry()
+    tools.register(Tool(name="browser_click", description="test", parameters={}, handler=fail))
+    client = _FakeClient(
+        [
+            [_chunk_tool_call(0, "c1", "browser_click", "{}")],
+            [_chunk_content("The browser action was blocked.")],
+        ]
+    )
+    answer = await run_loop(
+        client=client,  # type: ignore[arg-type]
+        model="fake",
+        messages=[user_message("Click the link")],
+        tools=tools,
+        source="openwebui",
+        session_id="chat-123",
+        request_id="req-123",
+    )
+    assert answer == "The browser action was blocked."
+    assert lf.start_as_current_observation.call_args.kwargs["input"] == "Click the link"
+    assert any(c.kwargs.get("output") == answer for c in span.update.call_args_list)
+    assert any(c.kwargs.get("session_id") == "chat-123" for c in propagation.call_args_list)
+    assert any("tool:browser_click" in c.kwargs.get("tags", []) for c in propagation.call_args_list)
+    assert any(c.kwargs.get("level") == "WARNING" for c in span.update.call_args_list)
+
+
+@pytest.mark.parametrize(
+    ("source", "question", "expected"),
+    [
+        ("openwebui", "### Task:\nGenerate a concise title summarizing the chat history.", "title"),
+        ("openwebui", "### Task:\nSuggest 3-5 relevant follow-up questions or prompts", "followup"),
+        ("openwebui", "### Task:\nGenerate 1-3 broad tags categorizing the main themes", "tags"),
+        ("openwebui", "Please search the web", "chat"),
+        ("api", "### Task:\nGenerate a concise title summarizing the chat history.", "chat"),
+    ],
+)
+def test_trace_task_distinguishes_webui_background_work(
+    source: str, question: str, expected: str
+) -> None:
+    assert loop_module.trace_task(source, question) == expected

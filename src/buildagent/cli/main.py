@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from uuid import uuid4
+
+from langfuse import get_client
 
 from buildagent.agent import run_loop
 from buildagent.config import get_settings
@@ -29,14 +32,13 @@ async def _chat() -> None:
     client = build_openai_client(settings)
 
     tools = ToolRegistry()
-    tools.register(
-        build_web_search_tool(settings.tavily_api_key, settings.tavily_max_results)
-    )
+    tools.register(build_web_search_tool(settings.tavily_api_key, settings.tavily_max_results))
     for tool in build_filesystem_tools(settings.filesystem_root):
         tools.register(tool)
 
     system_text = get_prompt_text(settings.system_prompt_name, settings.system_prompt_label)
     history: list[Message] = [system_message(system_text)]
+    session_id = f"cli-{uuid4().hex}"
 
     print("buildAgent MVP. Type your question. Empty line or Ctrl-D to exit.")
     while True:
@@ -54,6 +56,7 @@ async def _chat() -> None:
             messages=history,
             tools=tools,
             max_iterations=settings.max_loop_iterations,
+            session_id=session_id,
         )
         history.append({"role": "assistant", "content": answer})
         print(f"agent> {answer}\n")
@@ -68,10 +71,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.single:
-        asyncio.run(_single(args.single))
-    else:
-        asyncio.run(_chat())
+    try:
+        if args.single:
+            asyncio.run(_single(args.single))
+        else:
+            asyncio.run(_chat())
+    finally:
+        get_client().flush()
 
 
 async def _single(query: str) -> None:
@@ -79,9 +85,7 @@ async def _single(query: str) -> None:
     init_langfuse(settings)
     client = build_openai_client(settings)
     tools = ToolRegistry()
-    tools.register(
-        build_web_search_tool(settings.tavily_api_key, settings.tavily_max_results)
-    )
+    tools.register(build_web_search_tool(settings.tavily_api_key, settings.tavily_max_results))
     for tool in build_filesystem_tools(settings.filesystem_root):
         tools.register(tool)
     system_text = get_prompt_text(settings.system_prompt_name, settings.system_prompt_label)

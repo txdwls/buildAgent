@@ -8,7 +8,7 @@ accumulate tool_call deltas, execute the tools, then loop.
 completion). `run_loop` buffers the text deltas and returns a single string
 for callers (CLI, tests) that don't need progressive output.
 
-The @observe decorator wraps the loop as one Langfuse trace; inner LLM calls
+The root observation wraps the loop as one Langfuse trace; inner LLM calls
 via `langfuse.openai.AsyncOpenAI` and tool dispatches via `dispatch_tool_call`
 contribute nested generations and spans automatically.
 """
@@ -16,10 +16,12 @@ contribute nested generations and spans automatically.
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing
 from typing import Any
+from uuid import uuid4
 
-from langfuse import observe
+from langfuse import get_client, propagate_attributes
 from openai import AsyncOpenAI
 
 from buildagent.agent.events import (
@@ -35,6 +37,7 @@ from buildagent.domain import (
     ToolCall,
     tool_result_message,
 )
+from buildagent.observability.tracer import trace_task
 from buildagent.tools import ToolRegistry, dispatch_tool_call
 
 # OpenAI's reasoning-family models default to reasoning_effort != 'none' and
@@ -47,14 +50,84 @@ def _is_reasoning_model(model: str) -> bool:
     return model.startswith(_REASONING_MODEL_PREFIXES)
 
 
-@observe(name="agent.stream_loop", as_type="agent")
 async def stream_loop(
     client: AsyncOpenAI,
     model: str,
     messages: list[Message],
     tools: ToolRegistry,
     max_iterations: int = 10,
+    *,
+    source: str = "api",
+    session_id: str | None = None,
+    request_id: str | None = None,
 ) -> AsyncIterator[LoopEvent]:
+    """One request is one trace, containing generations and tool observations."""
+    lf = get_client()
+    request_id = request_id or uuid4().hex
+    question = next((m.get("content", "") for m in reversed(messages) if m["role"] == "user"), "")
+    task = trace_task(source, question)
+    name = f"agent.{source}.{task}"
+    tags = [f"source:{source}", f"task:{task}"]
+    parts: list[str] = []
+    tool_errors = 0
+    with (
+        lf.start_as_current_observation(name=name, as_type="agent", input=question) as span,
+        propagate_attributes(
+            trace_name=name,
+            session_id=session_id,
+            tags=tags,
+            metadata={"request_id": request_id, "model": model, "source": source, "task": task},
+        ),
+    ):
+        try:
+            async with aclosing(
+                _stream_loop(client, model, messages, tools, max_iterations)
+            ) as events:
+                async for event in events:
+                    if isinstance(event, TextDelta):
+                        parts.append(event.text)
+                    elif isinstance(event, ToolStarted):
+                        parts.clear()
+                        tag = f"tool:{event.name}"
+                        if tag not in tags:
+                            tags.append(tag)
+                    elif isinstance(event, ToolCompleted) and event.result.lower().startswith(
+                        ("error:", "invalid json arguments")
+                    ):
+                        tool_errors += 1
+                    yield event
+        except BaseException as exc:
+            status = "error" if isinstance(exc, Exception) else "cancelled"
+            span.update(
+                level="ERROR" if status == "error" else "WARNING",
+                status_message=type(exc).__name__,
+                output="".join(parts),
+            )
+            with propagate_attributes(
+                tags=[*tags, f"status:{status}"], metadata={"status": status}
+            ):
+                pass
+            raise
+        else:
+            status = "completed_with_tool_errors" if tool_errors else "completed"
+            span.update(
+                output="".join(parts),
+                level="WARNING" if tool_errors else "DEFAULT",
+                metadata={"tool_error_count": tool_errors},
+            )
+            with propagate_attributes(
+                tags=[*tags, f"status:{status}"], metadata={"status": status}
+            ):
+                pass
+
+
+async def _stream_loop(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[Message],
+    tools: ToolRegistry,
+    max_iterations: int = 10,
+) -> AsyncGenerator[LoopEvent, None]:
     working: list[Message] = list(messages)
     for _ in range(max_iterations):
         create_kwargs: dict[str, Any] = {
@@ -84,9 +157,7 @@ async def stream_loop(
             if getattr(delta, "tool_calls", None):
                 for tc in delta.tool_calls:
                     idx = getattr(tc, "index", 0) or 0
-                    slot = tool_slots.setdefault(
-                        idx, {"id": "", "name": "", "arguments": ""}
-                    )
+                    slot = tool_slots.setdefault(idx, {"id": "", "name": "", "arguments": ""})
                     if getattr(tc, "id", None):
                         slot["id"] = tc.id
                     fn = getattr(tc, "function", None)
@@ -122,6 +193,10 @@ async def run_loop(
     messages: list[Message],
     tools: ToolRegistry,
     max_iterations: int = 10,
+    *,
+    source: str = "cli",
+    session_id: str | None = None,
+    request_id: str | None = None,
 ) -> str:
     """Buffered wrapper for callers that only need the final answer text."""
 
@@ -132,15 +207,16 @@ async def run_loop(
         messages=messages,
         tools=tools,
         max_iterations=max_iterations,
+        source=source,
+        session_id=session_id,
+        request_id=request_id,
     ):
         if isinstance(event, TextDelta):
             parts.append(event.text)
     return "".join(parts)
 
 
-def _assistant_message(
-    content_parts: list[str], tool_slots: dict[int, dict[str, str]]
-) -> Message:
+def _assistant_message(content_parts: list[str], tool_slots: dict[int, dict[str, str]]) -> Message:
     """Rebuild the assistant turn for the next iteration's messages array."""
 
     msg: dict[str, Any] = {"role": "assistant"}

@@ -21,8 +21,11 @@ from buildagent.observability import init_langfuse
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncGenerator[None]:
     settings = get_settings()
-    init_langfuse(settings)
-    yield
+    langfuse = init_langfuse(settings)
+    try:
+        yield
+    finally:
+        langfuse.flush()
 
 
 def create_app() -> FastAPI:

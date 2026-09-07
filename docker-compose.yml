@@ -127,7 +127,7 @@ services:
       - minio_data:/data
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.11.1
+    image: ghcr.io/open-webui/open-webui:v0.11.3
     restart: always
     ports:
       - "3001:8080"
@@ -135,6 +135,7 @@ services:
       OPENAI_API_BASE_URLS: http://host.docker.internal:8000/v1
       OPENAI_API_KEYS: dummy
       ENABLE_OPENAI_API: "true"
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
       WEBUI_AUTH: "false"
       ENABLE_OLLAMA_API: "false"
       TASK_MODEL_EXTERNAL: gpt-5.6-luna

@@ -9,6 +9,8 @@ DI seams (`get_openai_client`, `get_tool_registry`, `get_system_prompt`) are
 overridden so the real Tavily/OpenAI factories are never touched.
 """
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import json
@@ -147,3 +149,60 @@ def test_models_endpoint_lists_whitelist() -> None:
     assert body["object"] == "list"
     ids = [entry["id"] for entry in body["data"]]
     assert ids == [_DEFAULT_MODEL, _EXTRA_MODEL]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_chat_id_reaches_loop(monkeypatch: pytest.MonkeyPatch, stream: bool) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def capture(**kwargs: Any) -> AsyncIterator[Any]:
+        calls.append(kwargs)
+        yield TextDelta(text="ok")
+        yield LoopCompleted()
+
+    monkeypatch.setattr(chat_module, "stream_loop", capture)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"X-OpenWebUI-Chat-Id": "chat-123"},
+            json={
+                "model": _DEFAULT_MODEL,
+                "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert response.status_code == 200
+    assert calls[0]["session_id"] == "chat-123"
+    assert calls[0]["source"] == "openwebui"
+    assert calls[0]["request_id"].startswith("chatcmpl-")
+
+
+def test_build_messages_owns_system_prompt_and_preserves_tool_metadata() -> None:
+    payload = chat_module.ChatRequest.model_validate(
+        {
+            "model": _DEFAULT_MODEL,
+            "messages": [
+                {"role": "system", "content": "caller prompt"},
+                {
+                    "role": "tool",
+                    "content": "result",
+                    "tool_call_id": "call-1",
+                    "name": "web_search",
+                },
+                {"role": "user", "content": None},
+            ],
+        }
+    )
+
+    messages = chat_module._build_messages(payload, "owned prompt")
+
+    assert messages == [
+        {"role": "system", "content": "owned prompt"},
+        {
+            "role": "tool",
+            "content": "result",
+            "tool_call_id": "call-1",
+            "name": "web_search",
+        },
+        {"role": "user", "content": ""},
+    ]
