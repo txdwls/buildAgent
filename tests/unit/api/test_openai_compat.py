@@ -9,6 +9,8 @@ DI seams (`get_openai_client`, `get_tool_registry`, `get_system_prompt`) are
 overridden so the real Tavily/OpenAI factories are never touched.
 """
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import json
@@ -173,3 +175,34 @@ def test_chat_id_reaches_loop(monkeypatch: pytest.MonkeyPatch, stream: bool) -> 
     assert calls[0]["session_id"] == "chat-123"
     assert calls[0]["source"] == "openwebui"
     assert calls[0]["request_id"].startswith("chatcmpl-")
+
+
+def test_build_messages_owns_system_prompt_and_preserves_tool_metadata() -> None:
+    payload = chat_module.ChatRequest.model_validate(
+        {
+            "model": _DEFAULT_MODEL,
+            "messages": [
+                {"role": "system", "content": "caller prompt"},
+                {
+                    "role": "tool",
+                    "content": "result",
+                    "tool_call_id": "call-1",
+                    "name": "web_search",
+                },
+                {"role": "user", "content": None},
+            ],
+        }
+    )
+
+    messages = chat_module._build_messages(payload, "owned prompt")
+
+    assert messages == [
+        {"role": "system", "content": "owned prompt"},
+        {
+            "role": "tool",
+            "content": "result",
+            "tool_call_id": "call-1",
+            "name": "web_search",
+        },
+        {"role": "user", "content": ""},
+    ]

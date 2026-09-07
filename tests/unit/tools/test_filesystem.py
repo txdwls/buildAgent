@@ -89,3 +89,28 @@ async def test_write_rejects_oversize(tools: dict[str, Tool]) -> None:
 async def test_read_of_missing_file_returns_error(tools: dict[str, Tool]) -> None:
     result = await tools["fs_read"].handler({"path": "nope.txt"})
     assert result.startswith("error: not a file")
+
+
+@pytest.mark.asyncio
+async def test_read_rejects_oversize_file(tools: dict[str, Tool], tmp_path: Path) -> None:
+    (tmp_path / "big.txt").write_bytes(b"a" * (MAX_BYTES + 1))
+
+    result = await tools["fs_read"].handler({"path": "big.txt"})
+
+    assert "exceeds" in result
+
+
+@pytest.mark.asyncio
+async def test_list_rejects_file_path(tools: dict[str, Tool], tmp_path: Path) -> None:
+    (tmp_path / "file.txt").write_text("x")
+
+    result = await tools["fs_list"].handler({"path": "file.txt"})
+
+    assert result == "error: not a directory: file.txt"
+
+
+@pytest.mark.asyncio
+async def test_list_reports_empty_directory(tools: dict[str, Tool]) -> None:
+    result = await tools["fs_list"].handler({"path": "."})
+
+    assert result == "(empty)"

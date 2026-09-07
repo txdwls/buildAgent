@@ -7,6 +7,10 @@ import pytest
 from buildagent.tools.browser import actions
 
 
+class _FakeResponse:
+    status = 200
+
+
 class _FakePage:
     def __init__(self, url: str = "https://a.com/x") -> None:
         self.url = url
@@ -14,6 +18,23 @@ class _FakePage:
         self.fill_calls: list[tuple[str, str, int]] = []
         self.click_raises: Exception | None = None
         self.fill_raises: Exception | None = None
+        self.goto_raises: Exception | None = None
+        self.goto_calls: list[tuple[str, str]] = []
+        self.title_value = "Test page"
+        self.body_text = "Visible text"
+
+    async def goto(self, url: str, wait_until: str) -> _FakeResponse:
+        if self.goto_raises is not None:
+            raise self.goto_raises
+        self.goto_calls.append((url, wait_until))
+        self.url = url
+        return _FakeResponse()
+
+    async def title(self) -> str:
+        return self.title_value
+
+    async def evaluate(self, _: str) -> str:
+        return self.body_text
 
     async def click(self, selector: str, timeout: int) -> None:
         if self.click_raises is not None:
@@ -42,6 +63,33 @@ def _tools(prefixes: str = "https://a.com/") -> dict[str, Any]:
         allowed_url_prefixes=prefixes, headless=True, nav_timeout_s=5.0
     )
     return {tool.name: tool for tool in built}
+
+
+@pytest.mark.asyncio
+async def test_open_returns_status_title_and_text_preview(fake_page: _FakePage) -> None:
+    tools = _tools()
+
+    result = await tools["browser_open"].handler({"url": "https://a.com/new"})
+
+    assert result == "status=200\ntitle=Test page\ntext_preview:\nVisible text"
+    assert fake_page.goto_calls == [("https://a.com/new", "domcontentloaded")]
+
+
+@pytest.mark.asyncio
+async def test_open_rejects_url_outside_allowlist(fake_page: _FakePage) -> None:
+    result = await _tools()["browser_open"].handler({"url": "https://evil.com/"})
+
+    assert result == "error: url not in allowlist: https://evil.com/"
+    assert fake_page.goto_calls == []
+
+
+@pytest.mark.asyncio
+async def test_open_returns_navigation_error(fake_page: _FakePage) -> None:
+    fake_page.goto_raises = RuntimeError("timeout")
+
+    result = await _tools()["browser_open"].handler({"url": "https://a.com/new"})
+
+    assert result == "error: navigation failed: timeout"
 
 
 @pytest.mark.asyncio
@@ -84,3 +132,12 @@ async def test_type_rejects_when_page_url_outside_allowlist(fake_page: _FakePage
     result = await tools["browser_type"].handler({"selector": "#q", "text": "x"})
     assert result.startswith("error: current page not in allowlist")
     assert fake_page.fill_calls == []
+
+
+@pytest.mark.asyncio
+async def test_type_returns_error_string_on_failure(fake_page: _FakePage) -> None:
+    fake_page.fill_raises = RuntimeError("timeout")
+
+    result = await _tools()["browser_type"].handler({"selector": "#q", "text": "x"})
+
+    assert result == "error: type failed: timeout"

@@ -52,4 +52,4 @@ markers = [
     "integration: hits real Langfuse or other local services",
     "e2e: hits real OpenAI/Tavily; skipped by default",
 ]
-addopts = "-m 'not e2e'"
+addopts = "-m 'not integration and not e2e'"
