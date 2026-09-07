@@ -36,6 +36,12 @@ class Settings(BaseSettings):
 
     filesystem_root: str = "./data/workspace"
 
+    # Browser tool: comma-separated URL prefix allowlist. Empty in dev means
+    # allow-all; production should set it to a locked-down list.
+    browser_allowed_url_prefixes: str = ""
+    browser_headless: bool = True
+    browser_nav_timeout_s: float = 30.0
+
     system_prompt_name: str = "main_agent"
     system_prompt_label: str = "production"
 
