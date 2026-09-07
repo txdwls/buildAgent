@@ -71,6 +71,9 @@ instance/
 # Local documentation
 docs/
 
+# Local agent workspace and test artifacts
+data/
+
 # PyBuilder
 .pybuilder/
 target/
