@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-이 리포에서 에이전트 도구(Claude Code 등)가 따를 운영 규칙. 도메인 개념 학습 노트는 [docs/concepts.md](docs/concepts.md), Phase 로드맵은 [ROADMAP.md](ROADMAP.md).
+이 리포에서 에이전트 도구(Claude Code 등)가 따를 운영 규칙. 도메인 개념 학습 노트는 [docs/concepts.md](docs/concepts.md), Phase 로드맵은 [ROADMAP.md](ROADMAP.md), 현재 작업 상태와 인계는 [INTENT.md](INTENT.md)를 따른다.
 
 ## 1. 리포 개요
 
@@ -10,12 +10,30 @@ AI 엔지니어로 취업하기 위해 AI 에이전트를 raw SDK로 직접 만�
 
 ### 작업 시작과 종료
 
+- Claude와 GPT 모두 매 세션 루트 [INTENT.md](INTENT.md)를 먼저 읽고 현재 작업, 완료 근거, 다음 행동 한 가지를 확인한다.
 - Claude와 GPT 모두 매 세션 [docs/project-goal.md](docs/project-goal.md)와 [docs/workflow.md](docs/workflow.md)를 읽는다. 나머지 문서는 현재 작업에 해당하는 부분만 읽는다.
 - 구현 및 검증 작업에서는 관련 로컬 트러블슈팅 색인을 확인하고, 관찰한 실패와 미검증 위험을 구분해 기록한다. 상세 절차와 AI 교체 시 인계 항목은 `docs/workflow.md`를 따른다.
 - Phase 진행 상태는 현재 코드, Git 커밋과 PR로 확인한다. 이 파일에 진행률이나 개별 장애 이력을 쌓지 않는다.
-
 - 프레임워크(LangGraph, CrewAI 등)는 의도적으로 배제. OpenAI SDK function calling(`tool_calls`) 위에 루프, 컨텍스트, 관측, 평가, 가드레일을 손으로 쌓는다.
 - 프론트엔드는 Open WebUI 등 오픈소스 재사용. 배포/운영 인프라는 로컬 학습용에 한정.
+
+### INTENT.md 사용 가이드
+
+`CLAUDE.md`는 에이전트가 이 리포에서 어떻게 작업할지 정하고, `INTENT.md`는 무엇을 만들고 현재 무엇을 검증할지 정한다. 두 파일의 내용을 복사해 중복하지 않는다.
+
+- 루트 `INTENT.md`에는 프로젝트 목적, 현재 활성 Phase 또는 작업 한 가지, 완료 조건, 완료된 내용, 검증 증거, 다음 행동 한 가지, 제외 범위를 짧게 유지한다.
+- 작업을 시작할 때 `INTENT.md`와 `git status`, `git log -1`을 대조한다. 문서가 코드나 사용자 요청과 다르면 현재 코드, Git, 실행 결과를 우선하고 문서의 불일치를 바로 기록한다.
+- 작업 중에는 활성 작업을 하나만 둔다. 범위를 바꾸거나 Phase를 진행하려면 사용자 요청과 실제 증거가 필요하다.
+- 작업이 끝나면 테스트, 실행 결과, trace, 커밋처럼 재확인 가능한 근거를 완료 항목에 추가하고, 활성 작업을 다음 행동 한 가지로 교체한다. `INTENT.md` 자체는 완료 증거가 아니다.
+- 상세 문제 재현과 가설 검증은 로컬 `docs/troubleshooting/`에, Phase 계획은 `ROADMAP.md`에, 목표와 포트폴리오 기준은 `docs/project-goal.md`에 둔다. `INTENT.md`에는 링크와 현재 상태만 남긴다.
+- `INTENT.md`는 일반 Markdown 파일이므로 이 리포에서는 자동으로 읽힌다고 가정하지 않는다. 매 세션 이 규칙으로 명시적으로 읽는다. 외부 동기화 도구는 사용하지 않고 수동 편집 및 Git 버전 관리를 사용한다.
+- 시크릿, 원문 API 키, 긴 로그는 기록하지 않는다. 구현 승인, 커밋, push를 `INTENT.md`만으로 추론하지 않는다.
+
+조사 근거:
+
+- [Anthropic Claude Code memory guide](https://code.claude.com/docs/en/memory): `CLAUDE.md`는 세션 시작에 로드되는 작업 규칙이며 짧고 구체적으로 유지한다.
+- [INTENT.md open format](https://www.intentdocs.com/intent-md): 루트 파일에 목적, 작업 단위, 완료 조건을 두고 `CLAUDE.md`와 보완해 사용한다.
+- [prosa INTENT.md example](https://github.com/c3-oss/prosa/blob/master/INTENT.md): 프로젝트 의도는 한 파일에 두고 구조와 명령 문서는 별도로 유지하는 실제 사례다.
 
 ## 2. 절대 지켜야 할 것
 
@@ -127,7 +145,7 @@ domain은 어떤 SDK도 안 본다. OpenAI SDK는 `llm/` 안에만.
 
 ## 10. 실행 방법
 
-Phase 0 완료 상태. 로컬 환경 준비 순서.
+현재 작업 상태와 다음 행동은 [INTENT.md](INTENT.md)에서 확인한다. 아래는 로컬 환경 준비 순서다.
 
 1. Python 3.12 및 uv 설치
 2. `uv sync`로 의존성 설치
@@ -139,6 +157,7 @@ Phase 0 완료 상태. 로컬 환경 준비 순서.
 
 ## 관련 문서
 
+- [INTENT.md](INTENT.md): 현재 작업, 완료 근거, 다음 행동과 인계
 - [ROADMAP.md](ROADMAP.md): Phase 0~12 상세 계획
 - [docs/concepts.md](docs/concepts.md): 에이전트, tool use, 컨텍스트, RAG, 가드레일, 관측, 평가, 안정성, browser 자동화 학습 노트
 - `docs/adr/`: 결정 기록
