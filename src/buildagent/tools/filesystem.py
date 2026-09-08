@@ -26,7 +26,7 @@ def build_filesystem_tools(root: str | Path) -> list[Tool]:
     root_path.mkdir(parents=True, exist_ok=True)
 
     async def read_handler(arguments: dict[str, Any]) -> str:
-        target, err = _resolve(root_path, arguments["path"])
+        target, err = resolve_under_root(root_path, arguments["path"])
         if err is not None:
             return err
         if not target.is_file():
@@ -41,7 +41,7 @@ def build_filesystem_tools(root: str | Path) -> list[Tool]:
         raw = content.encode("utf-8")
         if len(raw) > MAX_BYTES:
             return f"error: content exceeds {MAX_BYTES}-byte write cap ({len(raw)} bytes)"
-        target, err = _resolve(root_path, arguments["path"])
+        target, err = resolve_under_root(root_path, arguments["path"])
         if err is not None:
             return err
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -50,7 +50,7 @@ def build_filesystem_tools(root: str | Path) -> list[Tool]:
 
     async def list_handler(arguments: dict[str, Any]) -> str:
         rel = arguments.get("path", ".")
-        target, err = _resolve(root_path, rel)
+        target, err = resolve_under_root(root_path, rel)
         if err is not None:
             return err
         if not target.is_dir():
@@ -127,12 +127,13 @@ def build_filesystem_tools(root: str | Path) -> list[Tool]:
     ]
 
 
-def _resolve(root: Path, rel: str) -> tuple[Path, str | None]:
+def resolve_under_root(root: Path, rel: str) -> tuple[Path, str | None]:
     """Resolve `rel` under `root`, refusing any escape.
 
     Returns (path, None) on success and (root, error_string) on refusal
     so callers can propagate the error to the model as a normal tool
-    result instead of crashing the loop.
+    result instead of crashing the loop. Shared with browser_screenshot
+    so PNG writes land in the same root-jail as fs_write.
 
     ponytail: resolves symlinks via Path.resolve() then verifies
     containment. Replace with a chroot or explicit symlink policy if we
