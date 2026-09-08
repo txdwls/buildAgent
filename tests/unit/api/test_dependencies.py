@@ -56,7 +56,7 @@ def test_tool_registry_provider_builds_all_configured_tools(
         browser_nav_timeout_s=7.0,
     )
     web_calls: list[tuple[str, int]] = []
-    browser_calls: list[tuple[str, bool, float]] = []
+    browser_calls: list[tuple[str, bool, float, str | Path]] = []
 
     def build_web(api_key: str, max_results: int) -> Tool:
         web_calls.append((api_key, max_results))
@@ -67,9 +67,15 @@ def test_tool_registry_provider_builds_all_configured_tools(
         return [_tool("fs_read")]
 
     def build_browser(
-        *, allowed_url_prefixes: str, headless: bool, nav_timeout_s: float
+        *,
+        allowed_url_prefixes: str,
+        headless: bool,
+        nav_timeout_s: float,
+        filesystem_root: str | Path,
     ) -> list[Tool]:
-        browser_calls.append((allowed_url_prefixes, headless, nav_timeout_s))
+        browser_calls.append(
+            (allowed_url_prefixes, headless, nav_timeout_s, filesystem_root)
+        )
         return [_tool("browser_open")]
 
     monkeypatch.setattr(dependencies, "get_settings", lambda: settings)
@@ -82,7 +88,7 @@ def test_tool_registry_provider_builds_all_configured_tools(
         assert registry.names() == ["web_search", "fs_read", "browser_open"]
         assert dependencies.get_tool_registry() is registry
         assert web_calls == [("tavily", 3)]
-        assert browser_calls == [("https://example.com/", False, 7.0)]
+        assert browser_calls == [("https://example.com/", False, 7.0, tmp_path)]
     finally:
         dependencies._tools.cache_clear()
 
