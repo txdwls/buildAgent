@@ -43,6 +43,7 @@ def _tools() -> ToolRegistry:
         allowed_url_prefixes=settings.browser_allowed_url_prefixes,
         headless=settings.browser_headless,
         nav_timeout_s=settings.browser_nav_timeout_s,
+        filesystem_root=settings.filesystem_root,
     ):
         registry.register(tool)
     return registry

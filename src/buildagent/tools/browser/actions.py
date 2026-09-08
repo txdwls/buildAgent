@@ -1,22 +1,32 @@
 """Browser tools exposed to the agent.
 
-Slice 1: browser_open navigates the shared page.
-Slice 2: browser_click and browser_type interact with the current page via
-CSS selector. Each atomic tool shows up as its own Langfuse span.
-Remaining slices (extract, screenshot) land later.
+browser_open navigates the shared page. browser_click and browser_type
+interact with the current page via CSS selector. browser_extract reads
+text or an attribute from matching elements. browser_screenshot writes
+a PNG into the filesystem root-jail. Each atomic tool shows up as its
+own Langfuse span.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from buildagent.domain import Tool
 from buildagent.tools.browser.allowlist import is_allowed, parse_allowlist
 from buildagent.tools.browser.session import get_page
+from buildagent.tools.filesystem import resolve_under_root
 
 MAX_TEXT_PREVIEW = 2000
 DEFAULT_ACTION_TIMEOUT_S = 10.0
+DEFAULT_EXTRACT_LIMIT = 20
+MAX_EXTRACT_CHARS = 4000
+
+_EXTRACT_SCRIPT = (
+    "(els, attr) => els.map(el => "
+    "attr ? (el.getAttribute(attr) || '') : (el.innerText || ''))"
+)
 
 
 def build_browser_tools(
@@ -24,8 +34,11 @@ def build_browser_tools(
     allowed_url_prefixes: str,
     headless: bool,
     nav_timeout_s: float,
+    filesystem_root: str | Path,
 ) -> list[Tool]:
     allowlist = parse_allowlist(allowed_url_prefixes)
+    root_path = Path(filesystem_root).expanduser().resolve()
+    root_path.mkdir(parents=True, exist_ok=True)
 
     async def open_handler(arguments: dict[str, Any]) -> str:
         url: str = arguments["url"]
@@ -66,6 +79,40 @@ def build_browser_tools(
         except Exception as exc:
             return f"error: type failed: {exc}"
         return f"ok: filled {selector} ({len(text)} chars)"
+
+    async def extract_handler(arguments: dict[str, Any]) -> str:
+        selector: str = arguments["selector"]
+        attr: str = arguments.get("attr", "") or ""
+        limit = int(arguments.get("limit", DEFAULT_EXTRACT_LIMIT))
+        page = await get_page(headless=headless, nav_timeout_s=nav_timeout_s)
+        if not is_allowed(page.url, allowlist):
+            return f"error: current page not in allowlist: {page.url}"
+        try:
+            values = await page.eval_on_selector_all(selector, _EXTRACT_SCRIPT, attr)
+        except Exception as exc:
+            return f"error: extract failed: {exc}"
+        if not values:
+            return f"matches=0 for {selector}"
+        clipped = [_one_line(str(v)) for v in values[:limit]]
+        body = "\n".join(clipped)[:MAX_EXTRACT_CHARS]
+        return f"matches={len(values)} (returned {len(clipped)})\n{body}"
+
+    async def screenshot_handler(arguments: dict[str, Any]) -> str:
+        rel: str = arguments["path"]
+        full_page = bool(arguments.get("full_page", False))
+        page = await get_page(headless=headless, nav_timeout_s=nav_timeout_s)
+        if not is_allowed(page.url, allowlist):
+            return f"error: current page not in allowlist: {page.url}"
+        target, err = resolve_under_root(root_path, rel)
+        if err is not None:
+            return err
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await page.screenshot(path=str(target), full_page=full_page)
+        except Exception as exc:
+            return f"error: screenshot failed: {exc}"
+        size = target.stat().st_size
+        return f"ok: wrote screenshot to {rel} ({size} bytes, full_page={full_page})"
 
     return [
         Tool(
@@ -149,4 +196,73 @@ def build_browser_tools(
             },
             handler=type_handler,
         ),
+        Tool(
+            name="browser_extract",
+            description=(
+                "Extract visible text (default) or a named attribute from every "
+                "element on the current page matching a CSS selector. Returns one "
+                "value per line, capped at the configured limit and total character "
+                "budget. Call browser_open first."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector for the elements to read.",
+                    },
+                    "attr": {
+                        "type": "string",
+                        "description": (
+                            "Optional attribute name (e.g. 'href'). Omit to read "
+                            "visible innerText of each match."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum number of matches to return. "
+                            f"Defaults to {DEFAULT_EXTRACT_LIMIT}."
+                        ),
+                    },
+                },
+                "required": ["selector"],
+                "additionalProperties": False,
+            },
+            handler=extract_handler,
+        ),
+        Tool(
+            name="browser_screenshot",
+            description=(
+                "Capture a PNG of the current browser page and save it inside the "
+                "agent workspace. The path is resolved under the same root-jail as "
+                "fs_write. Call browser_open first."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Workspace-relative destination path for the PNG "
+                            "(e.g. 'screens/home.png')."
+                        ),
+                    },
+                    "full_page": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, capture the entire scroll height. Defaults "
+                            "to the visible viewport."
+                        ),
+                    },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            handler=screenshot_handler,
+        ),
     ]
+
+
+def _one_line(value: str) -> str:
+    return " ".join(value.split())
