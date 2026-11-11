@@ -31,6 +31,7 @@ from buildagent.context import (
     estimate,
     input_limit,
     message_cost,
+    validate,
 )
 from buildagent.domain import GuardrailBlocked, system_message, tool_result_message, user_message
 
@@ -277,3 +278,9 @@ def test_escape_heavy_summary_still_respects_its_own_reserve() -> None:
 def test_budget_floor_covers_the_default_tool_schema_cost() -> None:
     # Regression for the 413 seen live at the old 8,192 floor.
     assert input_limit(MIN_CONTEXT_BUDGET_TOKENS) > 4_605
+
+
+def test_content_that_cannot_be_utf8_encoded_is_invalid_input() -> None:
+    with pytest.raises(GuardrailBlocked) as exc:
+        validate([user_message("a\ud800b")])
+    assert exc.value.layer == "context_input"

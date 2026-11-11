@@ -194,6 +194,10 @@ def validate(messages: list[Message]) -> None:
 
     for message in messages:
         data = _as_dict(message)
+        try:
+            json.dumps(data, ensure_ascii=False).encode()
+        except UnicodeEncodeError as exc:
+            raise GuardrailBlocked("context_input", "message is not valid UTF-8") from exc
         role = data.get("role")
         if role not in _ROLES:
             raise GuardrailBlocked("context_input", "unsupported role")

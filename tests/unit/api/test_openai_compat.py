@@ -316,3 +316,72 @@ def test_malformed_tool_call_shape_is_rejected_by_input_validation() -> None:
             },
         )
     assert response.status_code == 422
+
+
+def _crashing_loop(**_: Any) -> AsyncIterator[Any]:
+    async def fake() -> AsyncIterator[Any]:
+        yield TextDelta(text="partial")
+        raise RuntimeError("upstream exploded with secret sk-test")
+
+    return fake()
+
+
+def test_json_maps_unexpected_loop_failure_to_a_safe_502(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_module, "stream_loop", _crashing_loop)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": _DEFAULT_MODEL, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "agent_error"
+    assert "sk-test" not in response.text
+
+
+def test_sse_ends_with_an_error_event_on_unexpected_loop_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_module, "stream_loop", _crashing_loop)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": _DEFAULT_MODEL,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.text.endswith("data: [DONE]\n\n")
+    assert _sse_chunks(response.text)[-1]["error"]["code"] == "agent_error"
+    assert "sk-test" not in response.text
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.parametrize(
+    "raw_messages",
+    [
+        '[{"role":"tool","tool_call_id":"a","content":"x"}]',
+        '[{"role":"user","content":"a\\ud800b"}]',
+    ],
+    ids=["orphan-tool-result", "lone-surrogate"],
+)
+def test_invalid_input_is_a_400_before_any_streaming(stream: bool, raw_messages: str) -> None:
+    body = (
+        f'{{"model":"{_DEFAULT_MODEL}","stream":{"true" if stream else "false"},'
+        f'"messages":{raw_messages}}}'
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_context"

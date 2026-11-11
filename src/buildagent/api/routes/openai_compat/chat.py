@@ -12,6 +12,7 @@ Non-stream requests buffer everything and return one `chat.completion` JSON.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -30,6 +31,7 @@ from buildagent.api.dependencies import (
     get_tool_registry,
 )
 from buildagent.config import Settings
+from buildagent.context import validate
 from buildagent.domain import GuardrailBlocked, Message, system_message
 from buildagent.tools import ToolRegistry
 
@@ -79,9 +81,24 @@ _ERROR_CONTRACT: dict[str, tuple[int, str, str, str]] = {
         "The model response ended before it was complete.",
     ),
 }
+_AGENT_ERROR: tuple[int, dict[str, Any]] = (
+    502,
+    {
+        "error": {
+            "message": "The agent could not complete the request.",
+            "type": "upstream_error",
+            "code": "agent_error",
+        }
+    },
+)
+logger = logging.getLogger(__name__)
 
 
-def _error_payload(exc: GuardrailBlocked) -> tuple[int, dict[str, Any]]:
+def _error_payload(exc: Exception) -> tuple[int, dict[str, Any]]:
+    if not isinstance(exc, GuardrailBlocked):
+        # Last-resort boundary: details go to the server log, never to the caller.
+        logger.error("chat completion failed", exc_info=exc)
+        return _AGENT_ERROR
     status, error_type, code, message = _ERROR_CONTRACT.get(
         exc.layer, _ERROR_CONTRACT["generation"]
     )
@@ -108,6 +125,12 @@ async def create_chat_completion(
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     resolved_model = _resolve_model(payload.model, settings)
+    try:
+        # Reject bad input while a real status code can still be sent.
+        validate(working_messages)
+    except GuardrailBlocked as exc:
+        status, error_body = _error_payload(exc)
+        return JSONResponse(error_body, status_code=status)
 
     if payload.stream:
         return StreamingResponse(
@@ -138,7 +161,7 @@ async def create_chat_completion(
             source="openwebui" if chat_id else "api",
             request_id=completion_id,
         )
-    except GuardrailBlocked as exc:
+    except Exception as exc:
         status, error_body = _error_payload(exc)
         return JSONResponse(error_body, status_code=status)
     return JSONResponse(
@@ -269,7 +292,7 @@ async def _sse_stream(
                 yield envelope({"content": _tool_progress_marker(event.name, event.arguments_json)})
             # ToolCompleted / LoopCompleted are internal signals: the final answer
             # already incorporates the tool result; nothing to forward as content.
-    except GuardrailBlocked as exc:
+    except Exception as exc:
         # The 200 header is already sent, so the failure has to ride the stream.
         # No finish_reason=stop: the caller must not read this as a clean end.
         _, payload = _error_payload(exc)
