@@ -1,5 +1,6 @@
 from buildagent.domain.errors import (
     AgentError,
+    GuardrailBlocked,
     LoopBudgetExceeded,
     ToolError,
     ToolNotFound,
@@ -15,6 +16,7 @@ from buildagent.domain.tool import Tool
 
 __all__ = [
     "AgentError",
+    "GuardrailBlocked",
     "LoopBudgetExceeded",
     "Message",
     "Tool",
