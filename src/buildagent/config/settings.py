@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from buildagent.context import DEFAULT_CONTEXT_BUDGET_TOKENS, MIN_CONTEXT_BUDGET_TOKENS
+
 
 class Settings(BaseSettings):
     """Environment-backed application settings.
@@ -33,6 +35,13 @@ class Settings(BaseSettings):
     openai_request_timeout_s: float = 60.0
 
     max_loop_iterations: int = 10
+    # Total estimated units per primary call; output and framing reserves are
+    # subtracted inside the context assembler.
+    context_budget_tokens: int = Field(
+        default=DEFAULT_CONTEXT_BUDGET_TOKENS,
+        ge=MIN_CONTEXT_BUDGET_TOKENS,
+        le=DEFAULT_CONTEXT_BUDGET_TOKENS,
+    )
     tavily_max_results: int = 5
 
     filesystem_root: str = "./data/workspace"
