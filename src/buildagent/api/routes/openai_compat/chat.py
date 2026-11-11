@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from buildagent.agent import TextDelta, ToolStarted, stream_loop
 from buildagent.api.dependencies import (
@@ -30,10 +30,21 @@ from buildagent.api.dependencies import (
     get_tool_registry,
 )
 from buildagent.config import Settings
-from buildagent.domain import Message, system_message
+from buildagent.domain import GuardrailBlocked, Message, system_message
 from buildagent.tools import ToolRegistry
 
 router = APIRouter()
+
+
+class _IncomingFunction(BaseModel):
+    name: str = Field(min_length=1)
+    arguments: str
+
+
+class _IncomingToolCall(BaseModel):
+    id: str = Field(min_length=1)
+    type: Literal["function"] = "function"
+    function: _IncomingFunction
 
 
 class _IncomingMessage(BaseModel):
@@ -41,6 +52,40 @@ class _IncomingMessage(BaseModel):
     content: str | None = None
     name: str | None = None
     tool_call_id: str | None = None
+    # Preserved so a caller can replay a valid tool conversation; the shared
+    # assembler still validates every call/result relationship.
+    tool_calls: list[_IncomingToolCall] | None = None
+
+
+# GuardrailBlocked.layer -> (status, error.type, error.code, safe message).
+# Provider and SDK strings never reach the caller.
+_ERROR_CONTRACT: dict[str, tuple[int, str, str, str]] = {
+    "context_input": (
+        400,
+        "invalid_request_error",
+        "invalid_context",
+        "The conversation has an invalid message structure.",
+    ),
+    "context": (
+        413,
+        "invalid_request_error",
+        "context_budget_exceeded",
+        "The request does not fit the context budget.",
+    ),
+    "generation": (
+        502,
+        "upstream_error",
+        "incomplete_generation",
+        "The model response ended before it was complete.",
+    ),
+}
+
+
+def _error_payload(exc: GuardrailBlocked) -> tuple[int, dict[str, Any]]:
+    status, error_type, code, message = _ERROR_CONTRACT.get(
+        exc.layer, _ERROR_CONTRACT["generation"]
+    )
+    return status, {"error": {"message": message, "type": error_type, "code": code}}
 
 
 class ChatRequest(BaseModel):
@@ -74,22 +119,28 @@ async def create_chat_completion(
                 messages=working_messages,
                 tools=tools,
                 max_iterations=settings.max_loop_iterations,
+                context_budget_tokens=settings.context_budget_tokens,
                 session_id=chat_id or session_id,
                 source="openwebui" if chat_id else "api",
             ),
             media_type="text/event-stream",
         )
 
-    content = await _collect_content(
-        client=client,
-        model=resolved_model,
-        messages=working_messages,
-        tools=tools,
-        max_iterations=settings.max_loop_iterations,
-        session_id=chat_id or session_id,
-        source="openwebui" if chat_id else "api",
-        request_id=completion_id,
-    )
+    try:
+        content = await _collect_content(
+            client=client,
+            model=resolved_model,
+            messages=working_messages,
+            tools=tools,
+            max_iterations=settings.max_loop_iterations,
+            context_budget_tokens=settings.context_budget_tokens,
+            session_id=chat_id or session_id,
+            source="openwebui" if chat_id else "api",
+            request_id=completion_id,
+        )
+    except GuardrailBlocked as exc:
+        status, error_body = _error_payload(exc)
+        return JSONResponse(error_body, status_code=status)
     return JSONResponse(
         {
             "id": completion_id,
@@ -126,6 +177,8 @@ def _build_messages(payload: ChatRequest, system_prompt: str) -> list[Message]:
             entry["tool_call_id"] = m.tool_call_id
         if m.name:
             entry["name"] = m.name
+        if m.tool_calls:
+            entry["tool_calls"] = [tc.model_dump() for tc in m.tool_calls]
         messages.append(entry)  # type: ignore[arg-type]
     return messages
 
@@ -149,6 +202,7 @@ async def _collect_content(
     messages: list[Message],
     tools: ToolRegistry,
     max_iterations: int,
+    context_budget_tokens: int,
     session_id: str | None = None,
     source: str = "api",
     request_id: str | None = None,
@@ -160,6 +214,7 @@ async def _collect_content(
         messages=messages,
         tools=tools,
         max_iterations=max_iterations,
+        context_budget_tokens=context_budget_tokens,
         session_id=session_id,
         source=source,
         request_id=request_id,
@@ -179,6 +234,7 @@ async def _sse_stream(
     messages: list[Message],
     tools: ToolRegistry,
     max_iterations: int,
+    context_budget_tokens: int,
     session_id: str | None = None,
     source: str = "api",
 ) -> AsyncIterator[str]:
@@ -195,22 +251,31 @@ async def _sse_stream(
     # First chunk announces the role so downstream clients render an assistant turn.
     yield envelope({"role": "assistant", "content": ""})
 
-    async for event in stream_loop(
-        client=client,
-        model=model,
-        messages=messages,
-        tools=tools,
-        max_iterations=max_iterations,
-        session_id=session_id,
-        source=source,
-        request_id=completion_id,
-    ):
-        if isinstance(event, TextDelta):
-            yield envelope({"content": event.text})
-        elif isinstance(event, ToolStarted):
-            yield envelope({"content": _tool_progress_marker(event.name, event.arguments_json)})
-        # ToolCompleted / LoopCompleted are internal signals: the final answer
-        # already incorporates the tool result; nothing to forward as content.
+    try:
+        async for event in stream_loop(
+            client=client,
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_iterations=max_iterations,
+            context_budget_tokens=context_budget_tokens,
+            session_id=session_id,
+            source=source,
+            request_id=completion_id,
+        ):
+            if isinstance(event, TextDelta):
+                yield envelope({"content": event.text})
+            elif isinstance(event, ToolStarted):
+                yield envelope({"content": _tool_progress_marker(event.name, event.arguments_json)})
+            # ToolCompleted / LoopCompleted are internal signals: the final answer
+            # already incorporates the tool result; nothing to forward as content.
+    except GuardrailBlocked as exc:
+        # The 200 header is already sent, so the failure has to ride the stream.
+        # No finish_reason=stop: the caller must not read this as a clean end.
+        _, payload = _error_payload(exc)
+        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
 
     yield envelope({}, finish_reason="stop")
     yield "data: [DONE]\n\n"
