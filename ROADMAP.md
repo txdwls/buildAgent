@@ -40,9 +40,12 @@
 
 ## Phase 5. 컨텍스트 관리 심화
 
-- Turn 요약 압축
-- Tool 결과 축약 (부피 큰 응답: HTML 덤프, 검색 결과)
-- system, tool, 대화, 현재 입력 조합 순서 실험
+- Claude Code Opus 구현과 직접 API 검증 후, 예산 및 계측 경계 보완과 실제 Open WebUI 화면 검증이 남아 있다. 다음 작업은 [보완 인계](docs/troubleshooting/2026-09-12-context-budget-and-metrics.md), 원 설계와 선택 근거는 [Phase 5 설계](docs/phases/phase-5-context-design.md)와 [ADR 0001](docs/adr/0001-context-management-boundaries.md).
+- API와 CLI의 공통 loop에서 매 모델 호출 전 context 조립 및 예산 검사. 기본 예산 32,768 추정 단위, 출력 예약 4,096, framing 여유 1,024. 바이트 기반 추정치와 실제 usage는 구분한다.
+- 예산 초과 시 큰 tool 결과부터 앞뒤 내용과 생략 표시를 포함해 축약하고, 오래된 완결 turn을 제거한다. 현재 질문과 tool 호출 관계는 보존한다.
+- 제거한 과거 turn은 gpt-5.6-luna로 요청당 최대 한 번 요약한다. 입력과 출력 모두 제한하고 실패하면 생략 표시와 검증된 window로 진행한다.
+- 조립 순서는 system, 과거 assistant 요약, 남긴 과거 대화, 현재 user와 assistant/tool 그룹이다. 보호 영역만으로도 예산을 넘으면 명시적 오류로 종료한다.
+- Langfuse 조립 span과 실제 usage, JSON/SSE/CLI 회귀를 검증한다. 실제 대화와 trace 확인까지 Phase 완료 조건으로 유지한다.
 
 ## Phase 6. Reflection 패턴
 

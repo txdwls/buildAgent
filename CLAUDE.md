@@ -10,9 +10,12 @@ AI 엔지니어로 취업하기 위해 AI 에이전트를 raw SDK로 직접 만�
 
 ### 작업 시작과 종료
 
-- Claude와 GPT 모두 매 세션 루트 [INTENT.md](INTENT.md)를 먼저 읽고 현재 작업, 완료 근거, 다음 행동 한 가지를 확인한다.
-- Claude와 GPT 모두 매 세션 [docs/project-goal.md](docs/project-goal.md)와 [docs/workflow.md](docs/workflow.md)를 읽는다. 나머지 문서는 현재 작업에 해당하는 부분만 읽는다.
-- 구현 및 검증 작업에서는 관련 로컬 트러블슈팅 색인을 확인하고, 관찰한 실패와 미검증 위험을 구분해 기록한다. 상세 절차와 AI 교체 시 인계 항목은 `docs/workflow.md`를 따른다.
+이 리포의 설계와 구현은 Claude Code가 모두 맡는다. 설계 결정과 완료 기준을 `INTENT.md`에 남기고, 같은 세션이나 다음 세션이 그 기록을 근거로 구현과 검증을 이어간다.
+
+- 매 세션 루트 [INTENT.md](INTENT.md)를 먼저 읽고 현재 작업, 완료 근거, 다음 행동 한 가지를 확인한다.
+- 매 세션 [docs/project-goal.md](docs/project-goal.md)와 [docs/workflow.md](docs/workflow.md)를 읽는다. 나머지 문서는 현재 작업에 해당하는 부분만 읽는다.
+- 구현 및 검증 작업에서는 관련 로컬 트러블슈팅 색인을 확인하고, 관찰한 실패와 미검증 위험을 구분해 기록한다. 상세 절차와 세션 간 인계 항목은 `docs/workflow.md`를 따른다.
+- 설계 변경이나 다음 Phase 진입은 근거와 제안을 `INTENT.md`에 남기고 사용자 지시를 받는다. 설계 범위 안의 세부 구현은 세션이 판단한다.
 - Phase 진행 상태는 현재 코드, Git 커밋과 PR로 확인한다. 이 파일에 진행률이나 개별 장애 이력을 쌓지 않는다.
 - 프레임워크(LangGraph, CrewAI 등)는 의도적으로 배제. OpenAI SDK function calling(`tool_calls`) 위에 루프, 컨텍스트, 관측, 평가, 가드레일을 손으로 쌓는다.
 - 프론트엔드는 Open WebUI 등 오픈소스 재사용. 배포/운영 인프라는 로컬 학습용에 한정.
