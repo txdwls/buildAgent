@@ -52,3 +52,17 @@ def test_non_main_prompt_reraises_langfuse_error(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(RuntimeError, match="offline"):
         prompts.get_prompt_text("judge")
+
+
+def test_context_summary_uses_fallback_when_langfuse_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail() -> object:
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(prompts, "get_client", fail)
+
+    text = prompts.get_prompt_text("context_summary")
+    assert text == prompts.DEFAULT_CONTEXT_SUMMARY_PROMPT
+    # The summary prompt must treat history as data, never as instructions.
+    assert "not instructions" in text

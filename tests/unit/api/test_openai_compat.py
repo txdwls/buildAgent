@@ -29,6 +29,7 @@ from buildagent.api.dependencies import (
     get_tool_registry,
 )
 from buildagent.api.routes.openai_compat import chat as chat_module
+from buildagent.domain import GuardrailBlocked
 from buildagent.tools.registry import ToolRegistry
 
 _DEFAULT_MODEL = "default-model"
@@ -40,6 +41,7 @@ class _FakeSettings:
     openai_extra_models: ClassVar[str] = _EXTRA_MODEL
     openai_model_whitelist: ClassVar[list[str]] = [_DEFAULT_MODEL, _EXTRA_MODEL]
     max_loop_iterations: ClassVar[int] = 10
+    context_budget_tokens: ClassVar[int] = 32_768
 
 
 async def _fake_stream_loop(**_: Any) -> AsyncIterator[Any]:
@@ -206,3 +208,180 @@ def test_build_messages_owns_system_prompt_and_preserves_tool_metadata() -> None
         },
         {"role": "user", "content": ""},
     ]
+
+
+def _guardrail_loop(layer: str) -> Any:
+    async def fake(**_: Any) -> AsyncIterator[Any]:
+        yield TextDelta(text="partial")
+        raise GuardrailBlocked(layer, "test")
+
+    return fake
+
+
+@pytest.mark.parametrize(
+    ("layer", "status", "code"),
+    [
+        ("context_input", 400, "invalid_context"),
+        ("context", 413, "context_budget_exceeded"),
+        ("generation", 502, "incomplete_generation"),
+    ],
+)
+def test_json_maps_guardrail_layers_to_the_error_contract(
+    monkeypatch: pytest.MonkeyPatch, layer: str, status: int, code: str
+) -> None:
+    monkeypatch.setattr(chat_module, "stream_loop", _guardrail_loop(layer))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": _DEFAULT_MODEL, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == status
+    error = response.json()["error"]
+    assert error["code"] == code
+    assert "guardrail" not in error["message"]
+
+
+def test_sse_ends_with_an_error_event_and_no_stop_finish_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_module, "stream_loop", _guardrail_loop("context"))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": _DEFAULT_MODEL,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert body.endswith("data: [DONE]\n\n")
+    chunks = _sse_chunks(body)
+    assert chunks[-1]["error"]["code"] == "context_budget_exceeded"
+    assert all("error" in c or c["choices"][0]["finish_reason"] is None for c in chunks)
+
+
+def test_incoming_tool_calls_are_preserved_for_the_shared_loop() -> None:
+    captured: list[Any] = []
+
+    async def capture(**kwargs: Any) -> AsyncIterator[Any]:
+        captured.append(kwargs["messages"])
+        yield TextDelta(text="ok")
+
+    with TestClient(app) as client:
+        chat_module.stream_loop = capture  # type: ignore[assignment]
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": _DEFAULT_MODEL,
+                "messages": [
+                    {"role": "user", "content": "search"},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {"name": "web_search", "arguments": '{"q":"x"}'},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+                    {"role": "user", "content": "summarize"},
+                ],
+            },
+        )
+        chat_module.stream_loop = _fake_stream_loop  # type: ignore[assignment]
+
+    assert response.status_code == 200
+    sent = captured[0]
+    assert sent[2]["tool_calls"][0]["id"] == "call-1"
+    assert sent[2]["tool_calls"][0]["function"]["name"] == "web_search"
+    assert sent[3]["tool_call_id"] == "call-1"
+
+
+def test_malformed_tool_call_shape_is_rejected_by_input_validation() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": _DEFAULT_MODEL,
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "tool_calls": [{"id": "", "type": "function"}]},
+                ],
+            },
+        )
+    assert response.status_code == 422
+
+
+def _crashing_loop(**_: Any) -> AsyncIterator[Any]:
+    async def fake() -> AsyncIterator[Any]:
+        yield TextDelta(text="partial")
+        raise RuntimeError("upstream exploded with secret sk-test")
+
+    return fake()
+
+
+def test_json_maps_unexpected_loop_failure_to_a_safe_502(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_module, "stream_loop", _crashing_loop)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": _DEFAULT_MODEL, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "agent_error"
+    assert "sk-test" not in response.text
+
+
+def test_sse_ends_with_an_error_event_on_unexpected_loop_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_module, "stream_loop", _crashing_loop)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": _DEFAULT_MODEL,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.text.endswith("data: [DONE]\n\n")
+    assert _sse_chunks(response.text)[-1]["error"]["code"] == "agent_error"
+    assert "sk-test" not in response.text
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.parametrize(
+    "raw_messages",
+    [
+        '[{"role":"tool","tool_call_id":"a","content":"x"}]',
+        '[{"role":"user","content":"a\\ud800b"}]',
+    ],
+    ids=["orphan-tool-result", "lone-surrogate"],
+)
+def test_invalid_input_is_a_400_before_any_streaming(stream: bool, raw_messages: str) -> None:
+    body = (
+        f'{{"model":"{_DEFAULT_MODEL}","stream":{"true" if stream else "false"},'
+        f'"messages":{raw_messages}}}'
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_context"
