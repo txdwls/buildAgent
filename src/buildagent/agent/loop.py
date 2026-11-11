@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from langfuse import get_client, propagate_attributes
@@ -217,6 +217,9 @@ async def _stream_loop(
         # dispatch them and never present the partial text as a finished answer.
         if finish_reason not in ("stop", "tool_calls"):
             raise GuardrailBlocked("generation", f"finish_reason={finish_reason or 'missing'}")
+        if finish_reason == "tool_calls" and not tool_slots:
+            raise GuardrailBlocked("generation", "finish_reason=tool_calls without tool calls")
+        _check_generated_calls(tool_slots, working)
 
         working.append(_assistant_message(content_parts, tool_slots))
 
@@ -361,3 +364,22 @@ def _assistant_message(content_parts: list[str], tool_slots: dict[int, dict[str,
             for slot in tool_slots.values()
         ]
     return msg  # type: ignore[return-value]
+
+
+def _check_generated_calls(slots: dict[int, dict[str, str]], history: list[Message]) -> None:
+    # The model produced these calls, so a malformed one is a provider defect,
+    # not client input; catch it here before the assembler reports context_input.
+    prior = {
+        call.get("id")
+        for message in history
+        for call in cast(
+            list[dict[str, Any]], cast(dict[str, Any], message).get("tool_calls") or []
+        )
+    }
+    seen: set[str] = set()
+    for slot in slots.values():
+        if not slot["id"] or not slot["name"]:
+            raise GuardrailBlocked("generation", "tool call without id or name")
+        if slot["id"] in prior or slot["id"] in seen:
+            raise GuardrailBlocked("generation", "reused tool call id")
+        seen.add(slot["id"])

@@ -703,3 +703,67 @@ async def test_later_iterations_stop_reserving_space_for_a_summary(
     assert seen == [True, False]
     second = client.calls[1]["messages"]
     assert estimate(second, list(tools.to_openai_schemas())) <= input_limit(8192)
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_finish_without_any_call_is_an_incomplete_generation() -> None:
+    client = _FakeClient([[_chunk_content("half"), _chunk_finish("tool_calls")]])
+
+    with pytest.raises(GuardrailBlocked) as exc:
+        await run_loop(
+            client=client,  # type: ignore[arg-type]
+            model="fake",
+            messages=[user_message("hi")],
+            tools=ToolRegistry(),
+            max_iterations=2,
+        )
+    assert exc.value.layer == "generation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "second_call",
+    [("", "echo"), ("c1", "")],
+    ids=["empty-id", "empty-name"],
+)
+async def test_malformed_generated_tool_call_is_a_generation_error(
+    second_call: tuple[str, str],
+) -> None:
+    called: list[dict[str, Any]] = []
+    tools = ToolRegistry()
+    tools.register(_echo_tool(called))
+    call_id, name = second_call
+    client = _FakeClient(
+        [[_chunk_tool_call(0, call_id, name, '{"text": "x"}'), _chunk_finish("tool_calls")]]
+    )
+
+    with pytest.raises(GuardrailBlocked) as exc:
+        await run_loop(
+            client=client,  # type: ignore[arg-type]
+            model="fake",
+            messages=[user_message("hi")],
+            tools=tools,
+            max_iterations=2,
+        )
+    assert exc.value.layer == "generation"
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_reused_generated_tool_call_id_is_a_generation_error() -> None:
+    called: list[dict[str, Any]] = []
+    tools = ToolRegistry()
+    tools.register(_echo_tool(called))
+    turn = [_chunk_tool_call(0, "call_0", "echo", '{"text": "x"}'), _chunk_finish("tool_calls")]
+    client = _FakeClient([list(turn), list(turn)])
+
+    with pytest.raises(GuardrailBlocked) as exc:
+        await run_loop(
+            client=client,  # type: ignore[arg-type]
+            model="fake",
+            messages=[user_message("hi")],
+            tools=tools,
+            max_iterations=3,
+        )
+    assert exc.value.layer == "generation"
+    assert len(called) == 1
