@@ -43,6 +43,8 @@ Active phase: Phase 5 context management. Implementation plus the budget and met
 
 Active task: review and merge the Phase 5 PR into `dev`. The estimator decision is closed (see open question 1).
 
+Review on 2026-11-11 (Codex plus two Sonnet reviewers): HIGH 1 to 3 and MEDIUM 4 and 5 fixed in `410cb91` and `e952e62` (`uv run pytest -q`: 142 passed; ruff and pyright clean). Remaining findings are tracked in issue #9.
+
 ### Implemented on 2026-09-12 (Claude Code Opus, implementation session)
 
 New files:
