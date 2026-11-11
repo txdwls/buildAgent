@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from buildagent.cli import main as cli
-from buildagent.domain import Tool
+from buildagent.domain import GuardrailBlocked, Tool
 
 
 def _settings() -> Any:
@@ -22,6 +22,7 @@ def _settings() -> Any:
         filesystem_root="/tmp/workspace",
         openai_model="model",
         max_loop_iterations=3,
+        context_budget_tokens=32_768,
         system_prompt_name="main_agent",
         system_prompt_label="production",
     )
@@ -114,6 +115,7 @@ async def test_chat_handles_one_turn_then_eof(
 async def test_chat_exits_on_empty_input(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
     _patch_runtime(monkeypatch, calls)
+
     def empty_input(_: str) -> str:
         return ""
 
@@ -169,3 +171,50 @@ def test_module_entrypoint_calls_cli_main(monkeypatch: pytest.MonkeyPatch) -> No
     runpy.run_module("buildagent.__main__", run_name="__main__")
 
     assert calls == ["called"]
+
+
+def _patch_failing_runtime(
+    monkeypatch: pytest.MonkeyPatch, layer: str, seen: list[list[Any]]
+) -> None:
+    _patch_runtime(monkeypatch, [])
+
+    async def run_loop(**kwargs: Any) -> str:
+        seen.append(list(kwargs["messages"]))
+        raise GuardrailBlocked(layer, "test")
+
+    monkeypatch.setattr(cli, "run_loop", run_loop)
+
+
+@pytest.mark.asyncio
+async def test_chat_drops_the_unanswerable_turn_and_keeps_going(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: list[list[Any]] = []
+    _patch_failing_runtime(monkeypatch, "context", seen)
+    inputs = iter(["too big", ""])
+
+    def read_input(_: str) -> str:
+        return next(inputs)
+
+    monkeypatch.setattr("builtins.input", read_input)
+
+    await cli._chat()
+
+    out = capsys.readouterr().out
+    assert "context budget" in out
+    # The failed user turn is not left in history for the next request.
+    assert len(seen) == 1
+    assert seen[0][-1]["content"] == "too big"
+
+
+@pytest.mark.asyncio
+async def test_single_exits_non_zero_on_context_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_failing_runtime(monkeypatch, "context_input", [])
+
+    with pytest.raises(SystemExit) as exc:
+        await cli._single("question")
+
+    assert exc.value.code == 1
+    assert "invalid message structure" in capsys.readouterr().out

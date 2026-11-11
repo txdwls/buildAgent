@@ -15,7 +15,7 @@ from langfuse import get_client
 
 from buildagent.agent import run_loop
 from buildagent.config import get_settings
-from buildagent.domain import Message, system_message, user_message
+from buildagent.domain import GuardrailBlocked, Message, system_message, user_message
 from buildagent.llm import build_openai_client
 from buildagent.observability import init_langfuse
 from buildagent.prompts import get_prompt_text
@@ -24,6 +24,16 @@ from buildagent.tools import (
     build_filesystem_tools,
     build_web_search_tool,
 )
+
+_CLI_ERRORS = {
+    "context_input": "error: the conversation has an invalid message structure.",
+    "context": "error: the request does not fit the context budget.",
+    "generation": "error: the model response ended before it was complete.",
+}
+
+
+def _error_line(exc: GuardrailBlocked) -> str:
+    return _CLI_ERRORS.get(exc.layer, "error: the request could not be completed.")
 
 
 async def _chat() -> None:
@@ -50,14 +60,21 @@ async def _chat() -> None:
         if not user_input:
             return
         history.append(user_message(user_input))
-        answer = await run_loop(
-            client=client,
-            model=settings.openai_model,
-            messages=history,
-            tools=tools,
-            max_iterations=settings.max_loop_iterations,
-            session_id=session_id,
-        )
+        try:
+            answer = await run_loop(
+                client=client,
+                model=settings.openai_model,
+                messages=history,
+                tools=tools,
+                max_iterations=settings.max_loop_iterations,
+                context_budget_tokens=settings.context_budget_tokens,
+                session_id=session_id,
+            )
+        except GuardrailBlocked as exc:
+            # Keep history sendable: drop the turn that could not be answered.
+            history.pop()
+            print(f"{_error_line(exc)}\n")
+            continue
         history.append({"role": "assistant", "content": answer})
         print(f"agent> {answer}\n")
 
@@ -90,13 +107,18 @@ async def _single(query: str) -> None:
         tools.register(tool)
     system_text = get_prompt_text(settings.system_prompt_name, settings.system_prompt_label)
     messages: list[Message] = [system_message(system_text), user_message(query)]
-    answer = await run_loop(
-        client=client,
-        model=settings.openai_model,
-        messages=messages,
-        tools=tools,
-        max_iterations=settings.max_loop_iterations,
-    )
+    try:
+        answer = await run_loop(
+            client=client,
+            model=settings.openai_model,
+            messages=messages,
+            tools=tools,
+            max_iterations=settings.max_loop_iterations,
+            context_budget_tokens=settings.context_budget_tokens,
+        )
+    except GuardrailBlocked as exc:
+        print(_error_line(exc))
+        raise SystemExit(1) from exc
     print(answer)
 
 
